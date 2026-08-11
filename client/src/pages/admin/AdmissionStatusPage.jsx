@@ -31,6 +31,9 @@ export default function AdmissionStatusPage() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null); // student object สำหรับ modal
   const [reloadToken, setReloadToken] = useState(0);
+  const [refreshing, setRefreshing] = useState(false); // โหลดซ้ำโดยไม่ล้างตาราง
+  const [lastCode, setLastCode] = useState(null);      // คนล่าสุดที่เปิดดู — ไว้เลื่อนกลับไปหา
+  const rowRefs = useRef(new Map());
   const modalRef = useRef(null);
   const importInputRef = useRef(null);
   const importResultRef = useRef(null);
@@ -68,9 +71,13 @@ export default function AdmissionStatusPage() {
   }, []);
 
   // โหลดข้อมูลเมื่อเลือกปี
+  // โหลดซ้ำ (หลังใส่รูป/แก้ข้อมูล) ต้องไม่สลับตารางเป็นโครงร่าง ไม่งั้นแถวหดเหลือ 8 แถว
+  // แล้ว scroll ของ .table-scroll ก็ถูกดีดกลับไปคนแรก — คนที่กำลังไล่ใส่รูปจะหาที่เดิมไม่เจอ
   useEffect(() => {
     if (!yearId) return;
-    setLoading(true);
+    const firstLoad = students.length === 0;
+    if (firstLoad) setLoading(true);
+    else setRefreshing(true);
     api.get('/student/admin/admission-overview', { params: { year_id: yearId } })
       .then(r => {
         const data = r.data || [];
@@ -78,8 +85,9 @@ export default function AdmissionStatusPage() {
         // sync selected ถ้า modal ยังเปิดอยู่
         setSelected(prev => prev ? (data.find(s => s.student_code === prev.student_code) || prev) : null);
       })
-      .catch(() => setStudents([]))
-      .finally(() => setLoading(false));
+      .catch(() => { if (firstLoad) setStudents([]); })
+      .finally(() => { setLoading(false); setRefreshing(false); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yearId, reloadToken]);
 
   // โหลดรายการมหาลัยครั้งเดียว
@@ -121,11 +129,18 @@ export default function AdmissionStatusPage() {
 
   const openModal = (s) => {
     setSelected(s);
+    setLastCode(s.student_code);
     setAddForm({ uni_id: '', program_id: '', confirmed: false });
     setUniPrograms([]);
     modalRef.current?.showModal();
   };
   const closeModal = () => modalRef.current?.close();
+
+  // ปิด modal แล้วพากลับไปที่แถวเดิม (เผื่อรายการขยับ/เพิ่งโหลดใหม่)
+  const handleModalClose = () => {
+    const row = lastCode && rowRefs.current.get(lastCode);
+    if (row) requestAnimationFrame(() => row.scrollIntoView({ block: 'center' }));
+  };
 
   // ── Admin CRUD handlers ──
   const handleAddAdmission = async () => {
@@ -360,6 +375,13 @@ export default function AdmissionStatusPage() {
             <span className="font-semibold tabular-nums">{multiConfirm.length}</span>
           </button>
         )}
+
+        {refreshing && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-base-content/50" role="status">
+            <span className="loading loading-spinner loading-xs" />
+            กำลังอัปเดตข้อมูล…
+          </span>
+        )}
       </div>
 
       {/* ── คำอธิบายสัญลักษณ์รูป ── */}
@@ -435,7 +457,13 @@ export default function AdmissionStatusPage() {
                 return (
                   <tr
                     key={s.student_code}
-                    className={`cursor-pointer ${overConfirmed ? 'bg-error/5' : ''}`}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(s.student_code, el);
+                      else rowRefs.current.delete(s.student_code);
+                    }}
+                    className={`cursor-pointer ${overConfirmed ? 'bg-error/5' : ''} ${
+                      s.student_code === lastCode ? 'ring-2 ring-inset ring-primary/45' : ''
+                    }`}
                     onClick={() => openModal(s)}
                     tabIndex={0}
                     onKeyDown={(e) => {
@@ -506,7 +534,7 @@ export default function AdmissionStatusPage() {
       </TableWrap>
 
       {/* ── Modal รายละเอียดของนักเรียน ── */}
-      <dialog ref={modalRef} className="modal">
+      <dialog ref={modalRef} className="modal" onClose={handleModalClose}>
         <div className="modal-box max-w-lg">
           {selected && (
             <>

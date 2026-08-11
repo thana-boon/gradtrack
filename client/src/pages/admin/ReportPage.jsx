@@ -1290,19 +1290,6 @@ export default function ReportPage() {
               <Icon name="settings" size={15} className="text-primary" />
               จัดวางอิสระ
             </span>
-            <div className="join shrink-0">
-              <button
-                className={`btn btn-xs join-item ${!perStudent ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setPerStudent(false)}
-                aria-pressed={!perStudent}
-              >ทุกคน</button>
-              <button
-                className={`btn btn-xs join-item ${perStudent ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setPerStudent(true)}
-                disabled={!previewCode}
-                aria-pressed={perStudent}
-              >เฉพาะคนนี้</button>
-            </div>
             {editingStudent && (
               <span className="badge badge-gold badge-xs shrink-0 gap-1">
                 <Icon name="star" size={10} strokeWidth={2.4} />
@@ -1367,6 +1354,22 @@ export default function ReportPage() {
               ลากกลาง = ย้าย • ลากมุมขวาล่าง = ปรับขนาด • คลิกที่ว่าง = ยกเลิกเลือก • ปุ่มรีเซ็ตบนกล่อง = คืนค่าชิ้นนั้น
             </span>
             <div className="ml-auto flex shrink-0 items-center gap-2">
+              {/* ขอบเขตของค่าที่กำลังแก้ — อยู่ติดปุ่มบันทึก จะได้เห็นว่ากำลังบันทึกให้ใคร */}
+              <div className="join shrink-0">
+                <button
+                  className={`btn btn-sm join-item ${!perStudent ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setPerStudent(false)}
+                  aria-pressed={!perStudent}
+                  title="แก้ค่ากลางที่ใช้กับนักเรียนทุกคน"
+                >ทุกคน</button>
+                <button
+                  className={`btn btn-sm join-item ${perStudent ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setPerStudent(true)}
+                  disabled={!previewCode}
+                  aria-pressed={perStudent}
+                  title="แก้ค่าเฉพาะนักเรียนคนที่กำลังดูอยู่"
+                >เฉพาะคนนี้</button>
+              </div>
               <button
                 className="btn btn-primary btn-sm gap-1.5"
                 onClick={saveSettings}

@@ -13,6 +13,77 @@ function blobToImage(blob) {
   });
 }
 
+// ── ย่อขนาดรูปก่อนอัปโหลด ────────────────────────────────────────────────────
+// รูปจากมือถือมักใหญ่ 5–15 MB ซึ่งเกินลิมิตฝั่ง server และช้าเปล่าๆ
+// (การ์ดรายงานใช้รูปแค่ 240×360 pt) — ย่อในเครื่องก่อนส่งจึงไม่เสียคุณภาพที่มองเห็น
+const MAX_DIM = 1600;                       // ด้านยาวสุดหลังย่อ
+const TARGET_BYTES = 2.5 * 1024 * 1024;     // เป้าหมายขนาดไฟล์หลังย่อ
+
+const formatBytes = (n) =>
+  n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+
+// PNG อาจเป็นรูปที่ตัดพื้นหลังมาแล้ว — ถ้ามี pixel โปร่งใสต้องคง PNG ไว้ ห้ามแปลงเป็น JPEG
+function hasTransparency(ctx, w, h) {
+  let data;
+  try { data = ctx.getImageData(0, 0, w, h).data; } catch { return true; } // อ่านไม่ได้ = เล่นให้ปลอดภัย
+  for (let i = 3; i < data.length; i += 4 * 7) { // สุ่มอ่านทุก 7 pixel พอ
+    if (data[i] < 250) return true;
+  }
+  return false;
+}
+
+const canvasToBlob = (canvas, type, quality) =>
+  new Promise((resolve) => canvas.toBlob((b) => resolve(b), type, quality));
+
+/**
+ * ย่อรูปให้ด้านยาวสุดไม่เกิน MAX_DIM และขนาดไฟล์ราวๆ TARGET_BYTES
+ * คืนไฟล์เดิมถ้าเล็กอยู่แล้ว หรือถ้าย่อไม่สำเร็จ (ปล่อยให้ server เป็นคนตัดสินใจ)
+ */
+async function shrinkImage(file, { maxDim = MAX_DIM, maxBytes = TARGET_BYTES } = {}) {
+  if (!file?.type?.startsWith('image/')) return file;
+  if (file.type === 'image/gif') return file; // วาดลง canvas แล้วจะเหลือเฟรมเดียว
+
+  let img;
+  try { img = await blobToImage(file); } catch { return file; }
+  const W = img.naturalWidth, H = img.naturalHeight;
+  if (!W || !H) return file;
+
+  const scale = Math.min(1, maxDim / Math.max(W, H));
+  if (scale === 1 && file.size <= maxBytes) return file; // เล็กพออยู่แล้ว
+
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const base = file.name.replace(/\.[^.]+$/, '') || 'photo';
+  const keepPng = file.type === 'image/png' && hasTransparency(ctx, w, h);
+
+  let blob = null;
+  if (keepPng) {
+    blob = await canvasToBlob(canvas, 'image/png');
+    // PNG คุมขนาดด้วย quality ไม่ได้ → ย่อ pixel ลงอีกทีละครึ่งถ้ายังใหญ่
+    let cw = w, ch = h;
+    for (let i = 0; i < 2 && blob && blob.size > maxBytes && cw > 480; i++) {
+      cw = Math.round(cw / 2); ch = Math.round(ch / 2);
+      canvas.width = cw; canvas.height = ch;
+      canvas.getContext('2d').drawImage(img, 0, 0, cw, ch);
+      blob = await canvasToBlob(canvas, 'image/png');
+    }
+  } else {
+    for (const q of [0.9, 0.8, 0.7, 0.6, 0.5]) {
+      blob = await canvasToBlob(canvas, 'image/jpeg', q);
+      if (blob && blob.size <= maxBytes) break;
+    }
+  }
+
+  if (!blob || blob.size >= file.size) return file; // ย่อแล้วไม่ได้เล็กลง — ใช้ของเดิม
+  const type = keepPng ? 'image/png' : 'image/jpeg';
+  return new File([blob], `${base}.${keepPng ? 'png' : 'jpg'}`, { type });
+}
+
 /**
  * Auto-crop: หากรอบจริงของตัวนักเรียนจาก pixel ที่ไม่โปร่งใส (alpha bounding box)
  * แล้วตัดพื้นที่ว่างทิ้ง + ขยายตัวเด็กให้เต็มกรอบสัดส่วน 2:3 (เท่ากรอบ 240×360 ในรายงาน)
@@ -94,9 +165,28 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
   const [error, setError] = useState('');
   const [processedUrl, setProcessedUrl] = useState(null);
   const processedBlobRef = useRef(null);
+  const [baseFile, setBaseFile] = useState(null);  // ไฟล์หลังย่อขนาด = ตัวที่ใช้จริงทุกขั้นตอน
+  const [preparing, setPreparing] = useState(true); // เริ่มที่ "กำลังย่อ" เพราะ modal เปิดพร้อมไฟล์เสมอ
+  const [shrunk, setShrunk] = useState(null);      // { from, to } ไว้บอกผู้ใช้ว่าย่อให้แล้ว
+
+  // ย่อขนาดรูปทันทีที่เปิด modal — รูปจากมือถือใหญ่เกินลิมิต server บ่อยมาก
+  // (parent ใส่ key ตามไฟล์ไว้ modal จึง remount ทุกครั้งที่เลือกรูปใหม่ สถานะจึงไม่ค้าง)
+  useEffect(() => {
+    if (!file) return;
+    let cancelled = false;
+    shrinkImage(file)
+      .then((f) => {
+        if (cancelled) return;
+        setBaseFile(f);
+        if (f !== file) setShrunk({ from: file.size, to: f.size });
+      })
+      .catch(() => { if (!cancelled) setBaseFile(file); })
+      .finally(() => { if (!cancelled) setPreparing(false); });
+    return () => { cancelled = true; };
+  }, [file]);
 
   // preview ของรูปต้นฉบับ (สถานะอื่นรีเซ็ตด้วยการ remount ผ่าน key จาก parent)
-  const originalUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+  const originalUrl = useMemo(() => (baseFile ? URL.createObjectURL(baseFile) : null), [baseFile]);
   useEffect(() => {
     return () => { if (originalUrl) URL.revokeObjectURL(originalUrl); };
   }, [originalUrl]);
@@ -106,22 +196,22 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
     return () => { if (processedUrl) URL.revokeObjectURL(processedUrl); };
   }, [processedUrl]);
 
-  // แอดมินสั่งลบพื้นหลังให้รูปที่นักเรียนอัปมาแล้ว → เปิดสวิตช์อัตโนมัติตอน mount
+  // แอดมินสั่งลบพื้นหลังให้รูปที่นักเรียนอัปมาแล้ว → เปิดสวิตช์อัตโนมัติเมื่อย่อรูปเสร็จ
   useEffect(() => {
-    if (autoRemoveBg && file) handleToggle(true);
+    if (autoRemoveBg && baseFile) handleToggle(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRemoveBg, file]);
+  }, [autoRemoveBg, baseFile]);
 
   const handleToggle = async (checked) => {
     setError('');
     setRemoveBg(checked);
-    if (!checked || !file) return;
+    if (!checked || !baseFile) return;
     // ถ้าประมวลผลแล้วไม่ต้องทำซ้ำ
     if (processedBlobRef.current) return;
 
     setProcessing(true);
     try {
-      const blob = await removeBackground(file);
+      const blob = await removeBackground(baseFile);
       // ตัดพื้นที่ว่าง + ขยายตัวเด็กให้เต็มกรอบ ให้ทุกรูปขนาดเท่ากัน
       const cropped = await autoCropToFrame(blob);
       processedBlobRef.current = cropped;
@@ -136,14 +226,14 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
   };
 
   const handleConfirm = () => {
-    if (!file) return;
+    if (!baseFile) return;
     if (removeBg && processedBlobRef.current) {
       // เปลี่ยนนามสกุลเป็น .png เพราะมี transparency
-      const base = file.name.replace(/\.[^.]+$/, '');
+      const base = baseFile.name.replace(/\.[^.]+$/, '');
       const finalFile = new File([processedBlobRef.current], `${base}.png`, { type: 'image/png' });
       onConfirm(finalFile);
     } else {
-      onConfirm(file);
+      onConfirm(baseFile);
     }
   };
 
@@ -175,16 +265,18 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
             className="relative h-64 w-48 overflow-hidden rounded-2xl border border-base-300"
             style={showProcessed ? checker : { background: '#f1edf7' }}
           >
-            <img
-              src={showProcessed ? processedUrl : originalUrl}
-              alt="ตัวอย่างรูปที่จะอัปโหลด"
-              className="absolute inset-0 h-full w-full"
-              style={{ objectFit: 'cover', objectPosition: 'center top' }}
-            />
-            {processing && (
+            {(showProcessed ? processedUrl : originalUrl) && (
+              <img
+                src={showProcessed ? processedUrl : originalUrl}
+                alt="ตัวอย่างรูปที่จะอัปโหลด"
+                className="absolute inset-0 h-full w-full"
+                style={{ objectFit: 'cover', objectPosition: 'center top' }}
+              />
+            )}
+            {(processing || preparing) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#1a102a]/65 text-white backdrop-blur-[1px]">
                 <span className="loading loading-spinner loading-md" />
-                <span className="text-xs">กำลังลบพื้นหลัง…</span>
+                <span className="text-xs">{preparing ? 'กำลังย่อขนาดรูป…' : 'กำลังลบพื้นหลัง…'}</span>
               </div>
             )}
           </div>
@@ -196,7 +288,7 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
             removeBg
               ? 'border-primary/40 bg-primary/8'
               : 'border-base-300 bg-base-100 hover:border-primary/35 hover:bg-secondary/50'
-          } ${(processing || uploading) ? 'cursor-not-allowed opacity-60' : ''}`}
+          } ${(processing || uploading || preparing) ? 'cursor-not-allowed opacity-60' : ''}`}
         >
           <span className="flex min-w-0 items-center gap-3">
             <span className={`gt-chip size-10 ${removeBg ? 'bg-primary text-primary-content' : ''}`}>
@@ -211,13 +303,20 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
             type="checkbox"
             className="toggle toggle-primary shrink-0"
             checked={removeBg}
-            disabled={processing || uploading}
+            disabled={processing || uploading || preparing}
             onChange={(e) => handleToggle(e.target.checked)}
           />
         </label>
         <p className="mt-2 px-1 text-xs leading-relaxed text-base-content/55">
           ครั้งแรกอาจใช้เวลาสักครู่ (ดาวน์โหลดตัวประมวลผล) ทุกอย่างทำในเครื่องของคุณ รูปไม่ถูกส่งออกไปข้างนอก
         </p>
+
+        {shrunk && (
+          <p className="mt-2 flex items-center gap-1.5 px-1 text-xs text-base-content/55">
+            <Icon name="checkCircle" size={14} className="text-success" />
+            ย่อขนาดรูปให้อัตโนมัติแล้ว {formatBytes(shrunk.from)} → {formatBytes(shrunk.to)}
+          </p>
+        )}
 
         <div aria-live="polite">
           {error && (
@@ -233,7 +332,11 @@ export default function PhotoUploadDialog({ file, uploading, autoRemoveBg = fals
           <button className="btn btn-ghost btn-sm" onClick={onCancel} disabled={uploading || processing}>
             ยกเลิก
           </button>
-          <button className="btn btn-primary btn-sm" onClick={handleConfirm} disabled={uploading || processing}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleConfirm}
+            disabled={uploading || processing || preparing || !baseFile}
+          >
             {uploading ? (
               <span className="loading loading-spinner loading-xs" />
             ) : (

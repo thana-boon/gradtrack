@@ -44,6 +44,10 @@ const excelUpload = multer({
 const PHOTO_DIR = path.join(__dirname, '..', 'uploads', 'student-photos');
 if (!fs.existsSync(PHOTO_DIR)) fs.mkdirSync(PHOTO_DIR, { recursive: true });
 
+// เบราว์เซอร์ย่อรูปให้ก่อนส่งแล้ว (ดู PhotoUploadDialog) ลิมิตนี้เป็นแค่กันเหนียว
+// เผื่อกรณีที่ย่อไม่ได้ เช่น รูปแปลกๆ ที่ canvas อ่านไม่ออก
+const PHOTO_MAX_MB = 20;
+
 const photoUpload = multer({
   storage: multer.diskStorage({
     destination: PHOTO_DIR,
@@ -52,7 +56,7 @@ const photoUpload = multer({
       cb(null, `student-${req.user.student_code}-${Date.now()}${ext}`);
     },
   }),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: PHOTO_MAX_MB * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
     else cb(new Error('ไฟล์ต้องเป็นรูปภาพเท่านั้น'));
@@ -68,12 +72,18 @@ const adminPhotoUpload = multer({
       cb(null, `student-${code}-${Date.now()}${ext}`);
     },
   }),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: PHOTO_MAX_MB * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
     else cb(new Error('ไฟล์ต้องเป็นรูปภาพเท่านั้น'));
   },
 }).single('photo');
+
+// multer คืนข้อความอังกฤษ ("File too large") — แปลงเป็นข้อความที่ผู้ใช้อ่านรู้เรื่อง
+const photoUploadError = (err) =>
+  err.code === 'LIMIT_FILE_SIZE'
+    ? `ไฟล์รูปใหญ่เกิน ${PHOTO_MAX_MB} MB — ลองย่อรูปก่อนอัปโหลด`
+    : err.message;
 
 // ─── Middleware: ตรวจว่าเป็น student role ────────────────────────────────────
 function studentOnly(req, res, next) {
@@ -460,7 +470,7 @@ router.put('/profile/quote', verifyToken, studentOnly, async (req, res) => {
 // ─── POST /api/student/profile/photo ─────────────────────────────────────────
 router.post('/profile/photo', verifyToken, studentOnly, (req, res) => {
   photoUpload(req, res, async (err) => {
-    if (err) return res.status(400).json({ message: err.message });
+    if (err) return res.status(400).json({ message: photoUploadError(err) });
     if (!req.file) return res.status(400).json({ message: 'ไม่พบไฟล์รูปภาพ' });
 
     try {
@@ -513,7 +523,7 @@ router.delete('/profile/photo', verifyToken, studentOnly, async (req, res) => {
 // Admin: อัปโหลดรูปให้นักเรียน
 router.post('/admin/students/:student_code/photo', verifyToken, adminOnly, (req, res) => {
   adminPhotoUpload(req, res, async (err) => {
-    if (err) return res.status(400).json({ message: err.message });
+    if (err) return res.status(400).json({ message: photoUploadError(err) });
     if (!req.file) return res.status(400).json({ message: 'ไม่พบไฟล์รูปภาพ' });
 
     try {

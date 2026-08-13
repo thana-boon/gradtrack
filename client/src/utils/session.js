@@ -36,6 +36,15 @@ const PLATFORM_ACTIVITY_KEY = 'lastPlatformActivity';
 const LOGOUT_REASON_KEY = 'logoutReason';
 const LOGOUT_AT_KEY = 'logoutAt';
 
+// ที่อยู่ SchoolOS ที่จะเด้งกลับไปเมื่อ session จบ — utils/sso.js เขียนไว้ให้ตอนอ่าน
+// คอนฟิกจาก server (ค่าเดียวกับ SCHOOLOS_PORTAL_URL) · เก็บใน localStorage เพราะ
+// ไฟล์นี้ถูกเรียกจาก axios interceptor ซึ่งรออะไรแบบ async ไม่ได้
+export const SCHOOLOS_HOME_KEY = 'schoolosHome';
+
+// "เพิ่งเด้งไป SchoolOS ไปแล้วรอบหนึ่ง" — ตัวกันลูป ดู bouncedToSchoolOSRecently()
+const BOUNCED_AT_KEY = 'schoolosBouncedAt';
+const BOUNCE_COOLDOWN_MS = 10 * 60 * 1000;
+
 export const TOKEN_KEY = 'token';
 export const USER_KEY = 'user';
 
@@ -221,6 +230,7 @@ export function getLogoutReason() {
 
 export function saveSession(user, token) {
   setLogoutReason(null); // ล็อกอินใหม่แล้ว — ข้อความ "หมดเวลา" รอบก่อนไม่ต้องค้าง
+  localStorage.removeItem(BOUNCED_AT_KEY); // เข้าได้แล้ว = ไม่ได้อยู่ในลูป ปลดธงกันลูป
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   localStorage.setItem(TOKEN_KEY, token);
   markActivity({ force: true }); // เริ่มจับเวลา idle ตั้งแต่วินาทีที่ล็อกอิน
@@ -236,21 +246,75 @@ export function clearStoredSession(reason) {
   clearActivity();
 }
 
+// ─── ปลายทางเมื่อ session จบ ─────────────────────────────────────────────────
+//
+// นโยบาย: **จบยังไงก็กลับไปเข้าระบบที่ SchoolOS** — GradTrack ไม่ใช่ประตูหน้าของตัวเอง
+// ทางเข้าปกติคือล็อกอินที่ SchoolOS แล้วเดินเข้ามา ดังนั้นคนที่หลุด (หมดเวลา / token
+// หมดอายุ / 401 / SchoolOS ออกไปแล้ว) และคนที่เปิด /grad ตรง ๆ โดยไม่มี session
+// ก็ควรไปจบที่เดียวกัน ไม่ใช่ค้างอยู่ที่ฟอร์มของเรา
+//
+// แลกมาด้วยการที่ข้อความ TIMEOUT_NOTICES ไม่ถูกเห็นในกรณีที่เด้งออกไป — ยอมรับได้
+// เพราะปลายทางคือหน้าล็อกอินที่ผู้ใช้คุ้นอยู่แล้ว ไม่ใช่หน้าที่ทำให้งงว่าหลงมาได้ยังไง
+
 /**
- * จบ session แล้วพาไปหน้า login **ของ GradTrack เอง**
+ * ที่อยู่ SchoolOS ในสายตาเบราว์เซอร์ · "/" = โดเมนเดียวกัน (prod อยู่ใต้
+ * schoolos.sukhon.ac.th/grad อยู่แล้ว "/" จึงเป็น schoolos.sukhon.ac.th พอดี)
  *
- * ปลายทางคือหน้า login ของเรา ไม่ใช่ portal ของ SchoolOS — คนที่เพิ่งหมดเวลาต้องได้
- * เห็นข้อความบอกเหตุผล (TIMEOUT_NOTICES) แล้วเข้าใหม่ได้ทันทีในระบบที่เขากำลังใช้อยู่
- * การเด้งออกไป portal ทำให้เขาไปโผล่หน้า login ของ SchoolOS โดยไม่มีคำอธิบาย
- * และต้องเดินกลับเข้ามาที่ /grad เองอีกรอบ · portal สงวนไว้ให้ปุ่ม "ออกจากระบบ"
- * ที่ตั้งใจออกจากทั้งแพลตฟอร์มเท่านั้น (ดู leaveToPortal ใน utils/sso.js)
+ * อ่านจากค่าที่ utils/sso.js cache ไว้ให้ ไม่ได้ hardcode โดเมน — ย้ายโดเมนเมื่อไหร่
+ * ก็ยังแก้ที่ SCHOOLOS_PORTAL_URL ฝั่ง server ที่เดียวเหมือนเดิม
+ */
+export function schoolosHome() {
+  const cached = (localStorage.getItem(SCHOOLOS_HOME_KEY) || '').trim();
+  return cached || '/';
+}
+
+/**
+ * เหตุผลที่ต้องจบที่ฟอร์มของเราเอง ห้ามเด้งไป SchoolOS
+ *
+ * SSO_DENIED = "ล็อกอิน SchoolOS อยู่จริง แต่บัญชีนี้ไม่มีสิทธิ์ใช้ GradTrack"
+ * (ลาออก / จบไปนานแล้ว / ไม่อยู่ในรายชื่อครู) — คนกลุ่มนี้ session ฝั่งโน้นยังดีอยู่
+ * ส่งกลับไปก็เท่ากับส่งกลับไปหาสิ่งที่เขามีอยู่แล้ว แล้วเขาก็เดินกลับเข้ามาโดนปฏิเสธซ้ำ
+ * โดยไม่มีใครบอกสักครั้งว่าเพราะอะไร
+ */
+const STAY_ON_LOGIN_REASONS = [LOGOUT_REASONS.SSO_DENIED];
+
+/** พาออกไป SchoolOS · ไม่แตะ session ฝั่งโน้น (คนละเรื่องกับปุ่ม "ออกจากระบบ") */
+export function leaveToSchoolOS() {
+  localStorage.setItem(BOUNCED_AT_KEY, String(Date.now()));
+  window.location.assign(schoolosHome());
+}
+
+/**
+ * เพิ่งถูกเด้งไป SchoolOS มาแล้วหรือเปล่า — **ตัวกันลูป ห้ามถอดออก**
+ *
+ * ลูปที่กันไว้: คนที่ไม่มี session ฝั่ง SchoolOS ให้ใช้ — บัญชี admin local ซึ่งเป็น
+ * ทางเข้าสำรองตอน SchoolOS ล่ม · ครู/นักเรียนที่กรอกรหัสเอง · ตอน dev ที่ยังไม่ได้
+ * ชี้ base มาที่ Users จริง · ถ้าเด้งทุกครั้งที่ไม่มี session พวกเขาจะเดินวนอยู่ระหว่าง
+ * สองเว็บโดยไม่มีทางเห็นฟอร์มเลยสักครั้ง
+ *
+ * ธงถูกล้างตอนล็อกอินสำเร็จ (saveSession) — นับต่อเนื่องเฉพาะช่วงที่ยังเข้าไม่ได้จริง ๆ
+ * คนที่เข้าออกตามปกติจึงไม่มีวันสะสมจนโดนกัน
+ */
+export function bouncedToSchoolOSRecently() {
+  const at = Number(localStorage.getItem(BOUNCED_AT_KEY));
+  return Number.isFinite(at) && at > 0 && Date.now() - at < BOUNCE_COOLDOWN_MS;
+}
+
+/**
+ * จบ session แล้วพาออกไป — ปลายทางคือ SchoolOS เสมอ ยกเว้น STAY_ON_LOGIN_REASONS
  *
  * โหลดหน้าใหม่ทั้งหน้าเสมอ ห้ามใช้ router — หน้าที่ค้างอยู่ถูก render ไว้ให้คนเก่า
  * การ navigate ฝั่ง client จะ re-render จาก cache ก้อนเดิม ซึ่งบนเครื่องส่วนกลาง
  * แปลว่าคนถัดไปอาจเห็นข้อมูลของคนก่อนหน้าค้างอยู่
  */
-export function bounceToLogin(reason) {
+export function bounceAfterSessionEnd(reason) {
   clearStoredSession(reason);
+
+  if (!STAY_ON_LOGIN_REASONS.includes(reason)) {
+    leaveToSchoolOS();
+    return;
+  }
+
   const target = withBase('/login');
   // อยู่หน้า login อยู่แล้ว → reload เพื่อให้ข้อความเหตุผลรอบนี้ถูกอ่านใหม่
   // (assign ไป path เดิมบางเบราว์เซอร์ไม่โหลดหน้าใหม่ให้)

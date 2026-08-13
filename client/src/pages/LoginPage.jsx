@@ -7,10 +7,12 @@ import {
   IDLE_TIMEOUT_MINUTES,
   LOGOUT_REASONS,
   MANUAL_LOGIN_REASONS,
+  bouncedToSchoolOSRecently,
   getLogoutReason,
+  leaveToSchoolOS,
   wasRecentlyLoggedOut,
 } from '../utils/session';
-import { isSilentLoginBlocked, trySilentLogin } from '../utils/sso';
+import { fetchLiveSession, isSilentLoginBlocked, trySilentLogin } from '../utils/sso';
 
 // เว้นระยะระหว่างการลอง SSO ซ้ำตอนกลับมาที่แท็บ — สลับแท็บไปมาเป็นสิบครั้งต่อนาที
 // เป็นเรื่องปกติ แต่ฝั่ง SchoolOS จำกัดการขอโค้ดไว้ 10 ครั้ง/นาที/session
@@ -44,6 +46,35 @@ const TIMEOUT_NOTICES = {
 const shouldSkipSso = () =>
   isSilentLoginBlocked() ||
   (wasRecentlyLoggedOut() && MANUAL_LOGIN_REASONS.includes(getLogoutReason()));
+
+// ─── ทางเข้าสำรอง: /grad/login?local=1 ───────────────────────────────────────
+// บังคับให้เห็นฟอร์ม ไม่เด้งไป SchoolOS ไม่ว่ากรณีใด — สำหรับบัญชี admin local
+// ที่ต้องใช้ในวันที่ SchoolOS ล่ม (ซึ่งเป็นวันที่การเด้งไป SchoolOS ช่วยอะไรไม่ได้เลย)
+// silent SSO ยังทำงานตามปกติ ใครล็อกอินอยู่ก็ยังเข้าได้เองเหมือนเดิม
+const wantsLocalForm = () => new URLSearchParams(window.location.search).has('local');
+
+/**
+ * เข้าเงียบ ๆ ไม่ได้ → ควรเด้งกลับไปเข้าระบบที่ SchoolOS ไหม
+ *
+ * ทางเข้าปกติของ GradTrack คือล็อกอินที่ SchoolOS แล้วเดินเข้ามา ฟอร์มนี้จึงไม่ใช่
+ * ประตูหน้า — คนที่มาถึงตรงนี้โดยไม่มี session ส่วนใหญ่คือคนที่ยังไม่ได้ล็อกอิน
+ *
+ * ⚠️ ต้องถาม GET /api/auth/session ให้ได้คำตอบชัด ๆ ก่อนเสมอ ห้ามเดาจากการที่
+ * trySilentLogin() คืน null — null รวมเคส "ขอโค้ดไม่สำเร็จ" (Users ล่ม / เน็ตกระตุก /
+ * CORS / โดน 429 จาก rate limit ของ handoff) ไว้ด้วย ซึ่ง**ไม่ได้**แปลว่าไม่มีใครล็อกอิน
+ * ถ้าเด้งจากตรงนั้น: Users ล่มทีเดียว ทุกคนจะถูกส่งไปหาหน้าที่ล่มอยู่ และคนที่ล็อกอิน
+ * SchoolOS อยู่แล้วแต่ขอโค้ดไม่ผ่านจะเดินวนกลับมาโดนส่งออกไปซ้ำ
+ * (fetchLiveSession คืน null เมื่อถามไม่ได้ · valid:false เมื่อ "ไม่มีใครล็อกอิน" จริง ๆ
+ * และคืน null เมื่อปิด SSO ไว้ด้วย จึงคุมเคส SSO_SILENT_LOGIN=0 ไปในตัว)
+ *
+ * นอกจากนั้นยังห้ามเด้งเมื่อ เพิ่งเด้งไปมาแล้วรอบหนึ่ง (bouncedToSchoolOSRecently —
+ * ตัวกันเดินวน) หรือขอฟอร์มมาเอง (?local=1)
+ */
+const shouldBounceToSchoolOS = async () => {
+  if (wantsLocalForm() || bouncedToSchoolOSRecently()) return false;
+  const live = await fetchLiveSession();
+  return Boolean(live) && !live.valid;
+};
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -102,6 +133,15 @@ export default function LoginPage() {
           login(data.user, data.token);
           navigate(data.user.role === 'student' ? '/student' : '/dashboard', { replace: true });
           return; // ออกจากหน้านี้แล้ว ไม่ต้องปิดสถานะกำลังตรวจสอบ
+        }
+
+        // เข้าเงียบ ๆ ไม่ได้ = ไม่มีใครล็อกอิน SchoolOS อยู่ → ส่งไปล็อกอินที่นั่น
+        //
+        // เฉพาะรอบแรกตอนเปิดหน้าเท่านั้น (background = กลับมาที่แท็บ) — คนที่เปิดแท็บนี้
+        // ค้างไว้แล้วสลับกลับมาไม่ควรถูกดึงออกจากหน้าที่กำลังดูอยู่ ปล่อยให้เขาลองใหม่เอง
+        if (!background && mounted.current && (await shouldBounceToSchoolOS())) {
+          leaveToSchoolOS();
+          return; // กำลังออกจากหน้านี้ — คงสถานะ "กำลังตรวจสอบ" ไว้ ไม่ให้ฟอร์มกะพริบ
         }
       } catch (err) {
         // 403 = ล็อกอิน SchoolOS อยู่จริงแต่ไม่มีสิทธิ์ใช้ GradTrack (ไม่อยู่ในรายชื่อ /

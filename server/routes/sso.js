@@ -31,11 +31,12 @@ const AUDIENCE = (process.env.SCHOOLOS_HANDOFF_AUDIENCE || 'grad').trim();
 // ไม่ต้องพึ่ง CORS เลย · ใส่ URL เต็มได้ถ้าอยู่คนละโดเมน (ต้องอยู่ใน SSO_ALLOWED_ORIGINS)
 const WEB_BASE = (process.env.SCHOOLOS_WEB_BASE ?? '/users').replace(/\/+$/, '');
 
-// ที่ที่ผู้ใช้จะถูกส่งไปหลังกดปุ่ม "ออกจากระบบ" (ซึ่งออกจาก SchoolOS ทั้งแพลตฟอร์มด้วย)
-// ค่าเริ่มต้นเป็น path ล้วน = หน้าแรกของโดเมนเดียวกัน (portal ของ SchoolOS)
+// ที่ที่ผู้ใช้จะถูกส่งไปเมื่อไม่มี session — ค่าเริ่มต้นเป็น path ล้วน = หน้าแรกของ
+// โดเมนเดียวกัน (portal ของ SchoolOS)
 //
-// ใช้เฉพาะตอนกดออกเอง — session ที่จบเอง (หมดเวลา / token หมดอายุ / 401) ต้องไปจบที่
-// หน้า login ของ GradTrack พร้อมข้อความบอกเหตุผล ไม่ใช่เด้งออกไปหน้า login ของ SchoolOS
+// ใช้ทั้งตอนกดปุ่ม "ออกจากระบบ" (ซึ่งออกจาก SchoolOS ทั้งแพลตฟอร์มด้วย) และตอนที่
+// session จบเอง/เปิด /grad ตรง ๆ โดยไม่มี session ซึ่งแค่ส่งไปที่นี่เฉย ๆ ไม่ได้เตะออก
+// จาก SchoolOS ด้วย (ดู utils/session.js ฝั่ง client)
 //
 // ต้องเป็น path เสมอถ้าเป็นไปได้ — ตอนล็อกเอาต์เราส่งค่านี้ไปเป็น ?next= ให้ Users
 // ซึ่งรับเฉพาะ path ในโดเมนตัวเอง หรือ origin ที่อยู่ใน SSO_ALLOWED_ORIGINS

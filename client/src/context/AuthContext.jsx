@@ -5,7 +5,7 @@ import {
   LOGOUT_REASONS,
   TOKEN_KEY,
   USER_KEY,
-  bounceToLogin,
+  bounceAfterSessionEnd,
   clearActivity,
   clearStoredSession,
   getTokenClaims,
@@ -98,16 +98,14 @@ export function AuthProvider({ children }) {
   const renewing = useRef(false); // กันขอต่ออายุซ้อนกันตอน interval มาชนกับ request ที่ยังค้าง
   const askingPlatform = useRef(false); // กันถาม SchoolOS ซ้อนกันตอนนาฬิกา idle หมดแล้ว
 
-  // session จบระหว่างใช้งาน (หมดเวลา / token หมดอายุ / โดน 401) → ล้างของเราแล้วพาไป
-  // หน้า login **ของ GradTrack เอง** พร้อมเหตุผล ไม่ใช่เด้งออกไป portal ของ SchoolOS
+  // session จบระหว่างใช้งาน (หมดเวลา / token หมดอายุ / โดน 401) → ล้างของเราแล้วพากลับ
+  // ไปเข้าระบบที่ SchoolOS ซึ่งเป็นประตูหน้าจริงของแพลตฟอร์ม (ดู bounceAfterSessionEnd)
   //
-  // เคยเด้งไป portal แล้วผู้ใช้ไปโผล่หน้า login ของ SchoolOS โดยไม่มีคำอธิบายว่าเกิดอะไรขึ้น
-  // แล้วต้องเดินกลับเข้ามาที่ /grad เองอีกรอบ — ทั้งที่หน้า login ของเราเตรียมข้อความ
-  // "หมดเวลาใช้งาน…" ไว้พร้อมแล้ว และ silent SSO ที่นั่นก็พาเข้าใหม่ให้เองได้ถ้ายัง
-  // ล็อกอิน SchoolOS อยู่ · ออกไป portal เฉพาะตอน "กดออกจากระบบ" ซึ่งตั้งใจออกทั้งแพลตฟอร์ม
+  // ต่างจากปุ่ม "ออกจากระบบ" ตรงที่ไม่ได้เตะออกจาก SchoolOS ด้วย — ครูอาจกำลังทำงาน
+  // ในระบบอื่นของแพลตฟอร์มอยู่ พอไปถึงก็จะเห็นว่ายังล็อกอินอยู่แล้วเดินกลับเข้ามาได้เลย
   const clearSession = useCallback((reason, { redirect = true } = {}) => {
-    // bounceToLogin ล้าง storage ให้ในตัวแล้วโหลดหน้าใหม่ทั้งหน้า
-    if (redirect) bounceToLogin(reason);
+    // bounceAfterSessionEnd ล้าง storage ให้ในตัวแล้วโหลดหน้าใหม่ทั้งหน้า
+    if (redirect) bounceAfterSessionEnd(reason);
     else clearStoredSession(reason);
     setSession({ user: null, token: null });
   }, []);

@@ -11,6 +11,7 @@
 //   · ใช้ได้ครั้งเดียว ยิงซ้ำด้วยโค้ดเดิมจะได้ used_code → ต้องขอใหม่เสมอ
 //   · ล้มเหลวเมื่อไหร่ก็แค่ "แสดงหน้า login ตามปกติ" ห้ามทำให้หน้าเว็บค้างหรือพัง
 import api from './api';
+import { SCHOOLOS_HOME_KEY } from './session';
 
 // เพดานรอคำตอบจาก SchoolOS — เกินกว่านี้ให้ไปแสดงฟอร์มเลย ดีกว่าปล่อยจอค้าง
 const PROBE_TIMEOUT_MS = 6000;
@@ -46,7 +47,13 @@ function loadConfig() {
   if (!configPromise) {
     configPromise = api
       .get('/auth/sso/config')
-      .then((res) => res.data)
+      .then((res) => {
+        // เก็บที่อยู่ SchoolOS ไว้ให้ utils/session.js อ่านแบบ sync — ตอน session จบ
+        // เราต้องเด้งออกไปทันทีจากที่ที่รอ await ไม่ได้ (axios interceptor)
+        // ค่านี้ไม่ใช่ความลับ และเปลี่ยนเมื่อไหร่ก็ถูกทับตอนโหลดหน้าถัดไปเอง
+        if (res.data?.portalUrl) localStorage.setItem(SCHOOLOS_HOME_KEY, res.data.portalUrl);
+        return res.data;
+      })
       // server ตอบไม่ได้ = ถือว่าไม่มี SSO ไปหน้า login ปกติ
       .catch(() => ({ enabled: false }));
   }
@@ -139,11 +146,11 @@ export async function trySilentLogin() {
 /**
  * ออกจาก SchoolOS แล้วไปจบที่หน้า portal — ใช้กับปุ่ม "ออกจากระบบ" **เท่านั้น**
  *
- * ⚠️ ห้ามใช้กับ session ที่จบเอง (หมดเวลา / token หมดอายุ / 401) — พวกนั้นต้องไปหน้า
- * login ของ GradTrack พร้อมข้อความบอกเหตุผล (ดู bounceToLogin ใน utils/session.js)
- * ไม่งั้นผู้ใช้จะไปโผล่หน้า login ของ SchoolOS แบบไม่รู้ว่าเกิดอะไรขึ้น แล้วต้องเดินกลับ
- * เข้ามาที่ /grad เองอีกรอบ · และห้ามเรียกตอน render หน้า login เด็ดขาด ไม่งั้นวนไม่รู้จบ
- * portal → กดเข้า GradTrack → หน้า login → เด้งกลับ portal → ...
+ * ⚠️ ห้ามใช้กับ session ที่จบเอง (หมดเวลา / token หมดอายุ / 401) — พวกนั้นก็ออกไปที่
+ * SchoolOS เหมือนกัน แต่ต้องไปด้วย leaveToSchoolOS() ใน utils/session.js ซึ่ง
+ * **ไม่** เรียก /api/auth/logout · ต่างกันตรงนี้: หมดเวลาใน GradTrack ไม่ควรไปเตะ
+ * ครูออกจาก SchoolOS ทั้งแพลตฟอร์มด้วย เขาอาจกำลังทำงานในระบบอื่นอยู่แท้ ๆ
+ * และตัวนั้นมีธงกันลูปคุมอยู่ (bouncedToSchoolOSRecently) ตัวนี้ไม่มี
  *
  * ออกจาก SchoolOS ด้วยการ navigate ไป /api/auth/logout?next= ครั้งเดียว เชื่อถือได้กว่า
  * ยิง POST ทิ้งไว้แล้วรีบเปลี่ยนหน้า ซึ่งเบราว์เซอร์อาจตัดทิ้งกลางคันจนออกไม่สำเร็จ

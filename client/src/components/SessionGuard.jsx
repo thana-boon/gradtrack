@@ -18,7 +18,7 @@ import { useAuth } from '../context/AuthContext';
 import { withBase } from '../utils/withBase';
 import {
   LOGOUT_REASONS,
-  bounceToLogin,
+  bounceAfterSessionEnd,
   getTokenClaims,
   markPlatformActivity,
   saveSession,
@@ -63,10 +63,16 @@ export default function SessionGuard() {
   useEffect(() => {
     if (!watching) return;
 
-    /** ล้าง session ของเราแล้วไปหน้า login แบบโหลดใหม่ทั้งหน้า (ดู utils/session.js) */
+    /**
+     * ล้าง session ของเราแล้วออกจากหน้านี้แบบโหลดใหม่ทั้งหน้า (ดู utils/session.js)
+     *
+     * ปลายทางแล้วแต่เหตุผล: SSO_ENDED → กลับไปเข้าระบบที่ SchoolOS ·
+     * SSO_DENIED → ฟอร์มของเราพร้อมข้อความ เพราะเขาล็อกอิน SchoolOS อยู่แล้ว
+     * ส่งกลับไปก็ไม่ได้แก้อะไร
+     */
     const leaveToLogin = (reason) => {
       leaving.current = true;
-      bounceToLogin(reason);
+      bounceAfterSessionEnd(reason);
     };
 
     const check = async () => {

@@ -144,9 +144,59 @@ export const UNI_BOX = { x: 56, y: 250, w: 560, h: 620 };
 // k กับความกว้างพันกันอยู่ (กว้างขึ้น → เตี้ยลง → ย่อน้อยลง → กว้างขึ้นอีก) วนหาแบบ fixed-point
 // จะแกว่งไม่ลู่เข้า จึงใช้ binary search แทน: ความสูงหลังย่อเป็นฟังก์ชันไม่ลดตาม k
 // → หา k มากสุดที่ยังไม่ล้น ซึ่งลู่เข้าแน่นอนใน 6 รอบ
+// ─── บรรทัดชื่อมหาวิทยาลัย: จบในบรรทัดเดียว, วิทยาเขตตกลงไปทั้งวงเล็บ ──────────
+//
+// เดิมชื่อกับวงเล็บวิทยาเขตเป็นข้อความก้อนเดียว พอยาวเกินกล่องเบราว์เซอร์ตัดตรงไหนก็ได้
+// จึงได้ "…(เฉลิมพระเกียรติ" ค้างบรรทัดบนแล้ว "จ.สกลนคร)" ห้อยอยู่บรรทัดล่าง
+//
+// แยกเป็นสอง flex item + flex-wrap แทน: วงเล็บวิทยาเขตตกไปทั้งก้อนเมื่อบรรทัดเดียวไม่พอ
+// ส่วนตัวชื่อเองย่อฟอนต์ลงให้จบบรรทัดเดียว (nowrap + วัดความกว้างจริง)
+const UNI_TITLE_MIN_RATIO = 0.62; // ย่อได้มากสุดเท่านี้ เล็กกว่านี้อ่านไม่ออก ยอมให้ตัดบรรทัดแทน
+
+/**
+ * ความกว้างจริงของแต่ละบรรทัดที่ "ขนาดฐาน" — nowrap ทำให้ข้อความล้นออกนอกกล่องได้
+ * ค่าที่วัดได้จึงไม่ขึ้นกับความกว้างกล่อง วัดครั้งเดียวต่อรอบ แล้วเทียบสัดส่วนเอาได้ทุกความกว้าง
+ */
+function measureUniTitles(el) {
+  const titles = [];
+  for (const node of el.querySelectorAll('[data-uni-title]')) {
+    const base = Number(node.dataset.uniTitle) || 0;
+    node.style.whiteSpace = 'nowrap';
+    node.style.fontSize = `${base}px`;
+    titles.push({ el: node, base, natural: 0 });
+  }
+  // เขียนครบทุกอันก่อนค่อยอ่าน — สลับเขียน/อ่านทีละอันบังคับให้เบราว์เซอร์ reflow ใหม่ทุกรอบ
+  for (const t of titles) {
+    for (const line of t.el.children) t.natural = Math.max(t.natural, line.offsetWidth);
+  }
+  return titles;
+}
+
+/** ย่อให้พอดีความกว้างที่มีอยู่ตอนนี้ — ต้องเรียกใหม่ทุกครั้งที่ความกว้างกล่องเปลี่ยน */
+function fitUniTitles(titles) {
+  const room = titles.map(t => t.el.clientWidth);
+  titles.forEach((t, i) => {
+    // +1 กันค่าปัดเศษของ offsetWidth (จำนวนเต็ม) ที่อาจขาดไปไม่ถึงหนึ่งพิกเซล
+    const ratio = room[i] > 0 && t.natural > 0 ? room[i] / (t.natural + 1) : 1;
+    if (ratio >= 1) {
+      t.el.style.fontSize = `${t.base}px`;
+      t.el.style.whiteSpace = 'nowrap';
+      return;
+    }
+    t.el.style.fontSize = `${Math.floor(t.base * Math.max(ratio, UNI_TITLE_MIN_RATIO) * 10) / 10}px`;
+    // ย่อจนสุดเพดานแล้วยังไม่พอ (ชื่อยาวผิดปกติ / คอลัมน์แคบมาก) — ยอมให้ตัดบรรทัด
+    // ดีกว่าปล่อยให้ล้นออกไปโดน overflow:hidden ของ UNI_BOX เฉือนหาย
+    t.el.style.whiteSpace = ratio < UNI_TITLE_MIN_RATIO ? 'normal' : 'nowrap';
+  });
+}
+
 const MIN_UNI_SCALE = 0.25;
-function fitUniScale(el) {
-  const setW = (k) => { el.style.width = `${Math.round(UNI_BOX.w / k)}px`; };
+function fitUniScale(el, titles) {
+  const setW = (k) => {
+    el.style.width = `${Math.round(UNI_BOX.w / k)}px`;
+    // ความกว้างเปลี่ยน = ขนาดชื่อที่พอดีเปลี่ยนตาม ต้องปรับก่อนวัดความสูงเสมอ
+    fitUniTitles(titles);
+  };
   // transform ไม่กระทบ layout box → scrollHeight ที่วัดได้เป็นความสูงเต็มเสมอ (ไม่ย่อซ้อนย่อ)
   el.style.transform = '';
   setW(1);
@@ -172,16 +222,18 @@ function fitUniScale(el) {
 const MAX_UNI_COLS = 3;
 function fitUniBlock(el, count) {
   const maxCols = Math.min(MAX_UNI_COLS, Math.max(1, count));
+  // วัดชื่อที่ขนาดฐานทีเดียวก่อนเริ่มลองคอลัมน์ — ค่านี้ไม่ขึ้นกับความกว้าง/จำนวนคอลัมน์
+  const titles = measureUniTitles(el);
   let best = { cols: 1, k: 0 };
   for (let cols = 1; cols <= maxCols; cols++) {
     el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    const k = fitUniScale(el);
+    const k = fitUniScale(el, titles);
     // คอลัมน์น้อย = การ์ดใหญ่ อ่านง่ายกว่า → ต้องดีขึ้นจริงจังถึงยอมแตกคอลัมน์เพิ่ม
     if (k > best.k + 0.03) best = { cols, k };
     if (k >= 1) break; // ไม่ต้องย่อแล้ว ไม่มีอะไรให้ชนะต่อ
   }
   el.style.gridTemplateColumns = `repeat(${best.cols}, 1fr)`;
-  const k = fitUniScale(el);
+  const k = fitUniScale(el, titles);
   el.style.transform = k < 1 ? `scale(${k})` : '';
 }
 
@@ -524,6 +576,9 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
                         alignItems: isVertical ? 'center' : 'flex-start',
                         gap: isOne ? 20 : isVertical ? 14 : 10,
                         boxSizing: 'border-box',
+                        // ชื่อมหาวิทยาลัยเป็น nowrap แล้ว ถ้าไม่ปลดขั้นต่ำ auto ของ grid item
+                        // min-content ของการ์ดจะกลายเป็นความกว้างชื่อเต็ม → คอลัมน์ถ่างจนล้นกล่อง
+                        minWidth: 0,
                       }}>
                         {g.logo_url && (
                           <div
@@ -536,9 +591,27 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
                             }}
                           />
                         )}
-                        <div style={{ flex: isVertical ? undefined : 1, minWidth: 0, textAlign: isVertical ? 'center' : 'left' }}>
-                          <div style={{ fontSize: uniSize, fontWeight: 700, lineHeight: 1.25, marginBottom: 6 }}>
-                            {g.university_name}{g.campus ? ` (${g.campus})` : ''}
+                        <div style={{
+                          flex: isVertical ? undefined : 1,
+                          minWidth: 0,
+                          // แนวตั้ง = ลูกของ flex column ที่ align-items:center → ความกว้างเป็น fit-content
+                          // ซึ่งโตตามชื่อ nowrap ได้ไม่จำกัด ต้องตรึงไว้ที่ความกว้างการ์ดเพื่อให้วัดที่ว่างได้จริง
+                          width: isVertical ? '100%' : undefined,
+                          textAlign: isVertical ? 'center' : 'left',
+                        }}>
+                          {/* ชื่อกับวงเล็บวิทยาเขตเป็นคนละ flex item — ไม่พอบรรทัดเดียวก็ตกไปทั้งวงเล็บ
+                              ไม่แตกกลางคำ · ขนาดจริงของบรรทัดนี้ fitUniTitles เป็นคนเซ็ตหลังวัดที่ว่าง */}
+                          <div
+                            data-uni-title={uniSize}
+                            style={{
+                              fontSize: uniSize, fontWeight: 700, lineHeight: 1.25, marginBottom: 6,
+                              display: 'flex', flexWrap: 'wrap', columnGap: 6,
+                              whiteSpace: 'nowrap',
+                              justifyContent: isVertical ? 'center' : 'flex-start',
+                            }}
+                          >
+                            <span>{g.university_name}</span>
+                            {!!g.campus && <span>({g.campus})</span>}
                           </div>
                           {g.entries.map((e, i) => (
                             <div key={i} style={{

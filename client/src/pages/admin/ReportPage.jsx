@@ -11,19 +11,110 @@ import SearchableSelect from '../../components/SearchableSelect';
 import Icon from '../../components/ui/Icon';
 import { PageHeader } from '../../components/ui';
 
+// ─── แคชรูประดับโมดูล (โลโก้ / พื้นหลัง / รูปนักเรียน) ──────────────────────────
+// modern-screenshot ฝังรูปลงภาพด้วยการ fetch แล้วแปลงเป็น data URL เอง แต่แคชของมันอยู่ใน
+// context ของการเรียกครั้งนั้น ๆ → export ทั้งรุ่นคือโหลดโลโก้ตัวเดิมซ้ำหลักพันรอบ
+// และถ้ารอบไหนพลาด (timeout / ตอบไม่ใช่ 2xx) มันจะ "แทนด้วย GIF ใส 1×1 เงียบ ๆ" = โลโก้หายทั้งใบ
+// โดยไม่มีอะไรขึ้น console เลย (logger ของมันผูกกับ debug ซึ่งปิดอยู่)
+//
+// จึงโหลดเองรอบเดียวต่อ URL เก็บ data URL ไว้ใช้ซ้ำ + retry เอง + ดังขึ้นเมื่อพลาดจริง
+// แล้วป้อนกลับให้ modern-screenshot ผ่าน option `fetchFn` (ดู renderCardCanvas)
+const mediaCache = new Map();   // absUrl → Promise<{ dataUrl, aspect } | null>
+const aspectCache = new Map();  // absUrl → w/h — อ่านแบบ sync ตอน render เพื่อคิดขนาดกล่องโลโก้
+
+const absUrl = (u) => {
+  try { return new URL(u, window.location.href).href; } catch { return String(u); }
+};
+
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const fr = new FileReader();
+  fr.onload = () => resolve(fr.result);
+  fr.onerror = () => reject(fr.error);
+  fr.readAsDataURL(blob);
+});
+
+const imageAspect = (src) => new Promise((resolve, reject) => {
+  const img = new window.Image();
+  img.onload = () => resolve(img.naturalWidth / img.naturalHeight || 1);
+  img.onerror = reject;
+  img.src = src;
+});
+
+function loadMedia(rawUrl) {
+  if (!rawUrl) return Promise.resolve(null);
+  const key = absUrl(rawUrl);
+  if (!mediaCache.has(key)) {
+    mediaCache.set(key, (async () => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const res = await fetch(key, { credentials: 'same-origin' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const dataUrl = await blobToDataUrl(await res.blob());
+          const aspect = await imageAspect(dataUrl).catch(() => null);
+          if (aspect) aspectCache.set(key, aspect);
+          return { dataUrl, aspect };
+        } catch (err) {
+          if (attempt === 3) {
+            console.error('โหลดรูปไม่สำเร็จ — รูปนี้จะหายไปจากภาพที่ export:', key, err);
+            mediaCache.delete(key); // ให้ export รอบหน้าได้ลองใหม่ ไม่ใช่จำว่าพังไปตลอด session
+            return null;
+          }
+          await new Promise(r => setTimeout(r, 200 * attempt));
+        }
+      }
+      return null;
+    })());
+  }
+  return mediaCache.get(key);
+}
+
+/** ทิ้ง data URL ที่ใช้ครั้งเดียวออกจากแคช (รูปนักเรียน — ไม่มีใครใช้ซ้ำ เก็บไว้กินแรม) */
+function releaseMedia(rawUrl) {
+  if (rawUrl) mediaCache.delete(absUrl(rawUrl));
+}
+
+/** สัดส่วน w/h ของรูปที่โหลดไว้แล้ว (undefined = ยังไม่รู้ → ผู้เรียกใช้ค่า default) */
+const getAspect = (u) => (u ? aspectCache.get(absUrl(u)) : undefined);
+
+/** จดสัดส่วนจาก <img> ที่โหลดเสร็จแล้วที่อื่น — กันโหลดซ้ำโดยไม่จำเป็น */
+export function noteAspect(rawUrl, img) {
+  if (!rawUrl || !img?.naturalWidth || !img?.naturalHeight) return;
+  aspectCache.set(absUrl(rawUrl), img.naturalWidth / img.naturalHeight);
+}
+
+// ─── ขนาดโลโก้มหาวิทยาลัย ─────────────────────────────────────────────────────
+// เดิมขนาดกระโดดตามจำนวนที่ติด (ติด 1 ที่ = 200px, 2 ที่ = 120px, 3 ที่ขึ้นไป = 80..36px)
+// โลโก้มหาวิทยาลัยเดียวกันจึงใหญ่/เล็กไม่เท่ากันในแต่ละใบ พอเอาการ์ดทั้งรุ่นมาเรียงดูจะเห็นชัดมาก
+// ตอนนี้ล็อกเป็นค่าเดียวทุกใบ ใบที่ของล้นค่อยให้ fitUniBlock ย่อทีเดียวตอนท้าย
+const UNI_LOGO_SIZE = 54;
+
+// โลโก้แต่ละแห่งสัดส่วนไม่เท่ากันเลย (ในระบบมีตั้งแต่ 134×256 ถึง 500×163 = ต่างกันเกือบ 6 เท่า)
+// ใส่กล่องจัตุรัสแล้ว contain ตัวแนวนอนจะเหลือความสูงแค่ 1 ใน 3 ของตัวจัตุรัส → ดูเล็กกว่ากันหลายเท่า
+// จึงคิดกล่องจาก "พื้นที่" แทนด้านยาว: กว้าง = S√r, สูง = S/√r (r = w/h) → พื้นที่ = S² เท่ากันทุกอัน
+// กล่องมีสัดส่วนเท่ารูปพอดี contain จึงเต็มกล่องพอดี ไม่เหลือขอบว่าง
+const LOGO_ASPECT_MIN = 0.45;
+const LOGO_ASPECT_MAX = 2.6;
+function logoBoxSize(aspect, size = UNI_LOGO_SIZE) {
+  const r = Math.min(LOGO_ASPECT_MAX, Math.max(LOGO_ASPECT_MIN, Number(aspect) > 0 ? Number(aspect) : 1));
+  const k = Math.sqrt(r);
+  return { w: Math.round(size * k), h: Math.round(size / k) };
+}
+
 // ─── Layout engine (left column only, 1 or 2 cols, up to 20 unis) ─────────────
 // count = จำนวนกล่องมหาวิทยาลัย, rows = จำนวนบรรทัดคณะทั้งหมด (คนที่ยื่นหลายคณะในมหาวิทยาลัยเดียว
 // กินที่แนวตั้งเพิ่มด้วย ถ้านับแต่ count ขนาดที่เลือกจะใหญ่เกินจนล้นกล่อง)
+// หมายเหตุ: ตารางนี้เหลือคุมแต่ "ตัวอักษร/ระยะ" — ขนาดโลโก้ล็อกที่ UNI_LOGO_SIZE
+// ส่วน cols เป็นแค่ค่าเริ่มต้นก่อน fitUniBlock จะวัดแล้วเลือกจำนวนคอลัมน์จริง
 function getUniLayout(count, rows = count) {
   if (count === 0) return {};
   // แถวคณะที่เกินมาถูกกว่ากล่องใหม่ (ไม่มีตรา/ขอบ/padding) — ตีเป็น ~0.6 กล่อง
   const n = count + Math.max(0, rows - count) * 0.6;
-  if (n <= 4)  return { cols: 1, logo: 80,  uni: 22, fac: 16, prog: 13, pad: '14px 18px', gap: 12 };
-  if (n <= 6)  return { cols: 1, logo: 64,  uni: 18, fac: 14, prog: 11, pad: '10px 14px', gap: 9  };
-  if (n <= 10) return { cols: 1, logo: 52,  uni: 15, fac: 12, prog: 10, pad: '8px 12px',  gap: 7  };
+  if (n <= 4)  return { cols: 1, uni: 22, fac: 16, prog: 13, pad: '14px 18px', gap: 12 };
+  if (n <= 6)  return { cols: 1, uni: 18, fac: 14, prog: 11, pad: '10px 14px', gap: 9  };
+  if (n <= 10) return { cols: 1, uni: 15, fac: 12, prog: 10, pad: '8px 12px',  gap: 7  };
   // >10: switch to 2 columns to use vertical space efficiently
-  if (n <= 14) return { cols: 2, logo: 44,  uni: 13, fac: 11, prog: 9,  pad: '7px 10px',  gap: 6  };
-  return           { cols: 2, logo: 36,  uni: 11, fac: 10, prog: 8,  pad: '5px 8px',   gap: 5  };
+  if (n <= 14) return { cols: 2, uni: 13, fac: 11, prog: 9,  pad: '7px 10px',  gap: 6  };
+  return           { cols: 2, uni: 11, fac: 10, prog: 8,  pad: '5px 8px',   gap: 5  };
 }
 
 // ─── Free-layout: ตำแหน่ง/ขนาดของแต่ละชิ้นบน canvas 1080×1080 (ลากวาง+ปรับขนาดได้เหมือน Word) ─
@@ -44,6 +135,70 @@ export const DEFAULT_LAYOUT = {
 export const PHOTO_ASPECT = 1.5; // สูง = กว้าง × 1.5 (คงสัดส่วน 240×360 เดิม)
 // กล่องรายชื่อมหาวิทยาลัยฝั่งซ้าย — คงระบบ auto-layout เดิม (ไม่ลากอิสระ)
 export const UNI_BOX = { x: 56, y: 250, w: 560, h: 620 };
+
+// ─── ย่อบล็อกรายชื่อมหาวิทยาลัยให้พอดี UNI_BOX ────────────────────────────────
+// เดิมใช้ transform: scale(UNI_BOX.h / h) เฉย ๆ ซึ่ง scale ย่อ "ความกว้าง" ไปด้วยทั้งที่ล้นแค่แนวตั้ง
+// คนที่ติดหลายที่จึงได้รายการเป็นแถบผอมลอยกลางกล่อง เสียพื้นที่แนวนอนไปกว่าครึ่งฟรี ๆ
+// แก้ด้วยการขยายความกว้าง logical ชดเชยเป็น UNI_BOX.w / k ก่อนย่อ → ย่อแล้วกว้างเต็ม 560 พอดี
+//
+// k กับความกว้างพันกันอยู่ (กว้างขึ้น → เตี้ยลง → ย่อน้อยลง → กว้างขึ้นอีก) วนหาแบบ fixed-point
+// จะแกว่งไม่ลู่เข้า จึงใช้ binary search แทน: ความสูงหลังย่อเป็นฟังก์ชันไม่ลดตาม k
+// → หา k มากสุดที่ยังไม่ล้น ซึ่งลู่เข้าแน่นอนใน 6 รอบ
+const MIN_UNI_SCALE = 0.25;
+function fitUniScale(el) {
+  const setW = (k) => { el.style.width = `${Math.round(UNI_BOX.w / k)}px`; };
+  // transform ไม่กระทบ layout box → scrollHeight ที่วัดได้เป็นความสูงเต็มเสมอ (ไม่ย่อซ้อนย่อ)
+  el.style.transform = '';
+  setW(1);
+  if (el.scrollHeight <= UNI_BOX.h) return 1;
+
+  let lo = MIN_UNI_SCALE; // ถือว่าพอดี (ถ้ายังไม่พอดีจะโดนย่อทับตอนท้าย)
+  let hi = 1;             // ล้นแน่ เพราะเช็คไปแล้วด้านบน
+  for (let i = 0; i < 6; i++) {
+    const mid = (lo + hi) / 2;
+    setW(mid);
+    if (el.scrollHeight * mid <= UNI_BOX.h) lo = mid; else hi = mid;
+  }
+  setW(lo);
+  // ขยายความกว้างมีแต่ทำให้เตี้ยลง จึงย่อทับเพิ่มได้อย่างปลอดภัย (กันกรณีต่ำสุดแล้วยังล้น)
+  const k = Math.min(lo, UNI_BOX.h / el.scrollHeight);
+  setW(k);
+  return k;
+}
+
+// เลือกจำนวนคอลัมน์จากการวัดจริง แทนเดาจากจำนวนที่ติดในตาราง getUniLayout
+// การกาง 1 คอลัมน์ให้กว้างขึ้นไม่ได้ลดความสูง (ข้อความสั้นอยู่แล้ว) แต่แตกเป็น 2-3 คอลัมน์ลดครึ่ง
+// วัดจริงแล้วคนติด 9-10 ที่ได้ตัวอักษรใหญ่ขึ้น 1.14-1.26 เท่า, ติด 17 ที่ (หลายคณะ) ~1.14 เท่า
+const MAX_UNI_COLS = 3;
+function fitUniBlock(el, count) {
+  const maxCols = Math.min(MAX_UNI_COLS, Math.max(1, count));
+  let best = { cols: 1, k: 0 };
+  for (let cols = 1; cols <= maxCols; cols++) {
+    el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    const k = fitUniScale(el);
+    // คอลัมน์น้อย = การ์ดใหญ่ อ่านง่ายกว่า → ต้องดีขึ้นจริงจังถึงยอมแตกคอลัมน์เพิ่ม
+    if (k > best.k + 0.03) best = { cols, k };
+    if (k >= 1) break; // ไม่ต้องย่อแล้ว ไม่มีอะไรให้ชนะต่อ
+  }
+  el.style.gridTemplateColumns = `repeat(${best.cols}, 1fr)`;
+  const k = fitUniScale(el);
+  el.style.transform = k < 1 ? `scale(${k})` : '';
+}
+
+// อ่านสัดส่วนโลโก้จากแคช และสั่งโหลดตัวที่ยังไม่รู้จัก แล้ว re-render เมื่อรู้แล้ว
+// (ตอน export แคชถูกเติมไว้ก่อนเรนเดอร์เสมอ การ์ดจึงได้ขนาดที่ถูกต้องตั้งแต่เฟรมแรก)
+function useLogoAspects(urls) {
+  const key = urls.join('|');
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const missing = urls.filter(u => u && !aspectCache.has(absUrl(u)));
+    if (missing.length === 0) return undefined;
+    let alive = true;
+    Promise.all(missing.map(loadMedia)).then(() => { if (alive) bump(n => n + 1); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+}
 
 // layout_json จาก DB เป็น string → object (พังก็คืน {} = ใช้ default)
 export function parseLayoutJson(v) {
@@ -97,10 +252,13 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
   const allAdmissions = student.admissions || [];
 
   // Group admissions by university
+  // groupKey ต้องติดไปกับกลุ่มด้วย เพราะ React key เดิมใช้แค่ university_id ทั้งที่จัดกลุ่มด้วย
+  // university_id + campus → คนที่ติดมหาวิทยาลัยเดียวกันคนละวิทยาเขตจะได้ key ซ้ำ
+  // React จะ reuse/ตกกล่องไปใบหนึ่ง = โลโก้หายไปดื้อ ๆ (เจอบ่อยขึ้นในคนที่ติดหลายที่)
   const grouped = Object.values(
     allAdmissions.reduce((acc, a) => {
       const key = `${a.university_id || a.university_name}_${a.campus || ''}`;
-      if (!acc[key]) acc[key] = { ...a, entries: [] };
+      if (!acc[key]) acc[key] = { ...a, groupKey: key, entries: [] };
       acc[key].entries.push({ faculty_name: a.faculty_name, program_name: a.program_name, confirmed: a.confirmed });
       if (a.confirmed) acc[key].groupConfirmed = true;
       return acc;
@@ -115,18 +273,24 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
   const rowCount = grouped.reduce((n, g) => n + Math.max(1, g.entries.length), 0);
   const L = getUniLayout(grouped.length, rowCount);
 
+  // สัดส่วนโลโก้ทุกอันบนการ์ดใบนี้ (ใช้คิดขนาดกล่องให้พื้นที่เท่ากันทุกอัน)
+  useLogoAspects(grouped.map(g => g.logo_url).filter(Boolean));
+
   // ── กันล้น: วัดความสูงจริงหลังเรนเดอร์ แล้วย่อทั้งบล็อกให้พอดี UNI_BOX ──
   // ตารางขนาดด้านบนเป็นค่าประมาณ (ชื่อมหาวิทยาลัย/คณะยาวไม่เท่ากัน ตัดบรรทัดไม่เท่ากัน)
   // จึงต้องมีตัววัดจริงปิดท้าย ไม่งั้นหัว-ท้ายรายการโดน overflow:hidden เฉือน
-  // เขียน transform ลง DOM ตรงๆ (ไม่ผ่าน state) — export เก็บภาพจาก DOM จริง จึงไม่ต้องรอ re-render
+  // เขียน width/transform ลง DOM ตรงๆ (ไม่ผ่าน state) — export เก็บภาพจาก DOM จริง ไม่ต้องรอ re-render
   const uniInnerRef = useRef(null);
   useLayoutEffect(() => {
     const el = uniInnerRef.current;
-    if (!el) return;
+    if (!el) return undefined;
+    // fitUniBlock เขียน width เอง ซึ่ง ResizeObserver จะยิงกลับมาทันที — กันวนไม่รู้จบ
+    // ใช้ setTimeout ไม่ใช่ rAF เพราะแท็บที่ถูกซ่อน/จอดับจะไม่มีเฟรมมาปลดล็อกให้
+    let busy = false;
     const measure = () => {
-      // transform: scale ไม่กระทบ layout box → ค่าที่วัดได้เป็นความสูงเต็มเสมอ (ไม่ย่อซ้ำ)
-      const h = el.scrollHeight;
-      el.style.transform = h > UNI_BOX.h ? `scale(${UNI_BOX.h / h})` : '';
+      if (busy) return;
+      busy = true;
+      try { fitUniBlock(el, grouped.length); } finally { setTimeout(() => { busy = false; }, 0); }
     };
     measure();
     // ฟอนต์ไทยโหลดช้ากว่า first paint → ความสูงเปลี่ยนทีหลัง ต้องวัดซ้ำ
@@ -335,19 +499,22 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
                   gridTemplateColumns: `repeat(${L.cols}, 1fr)`,
                   gap: L.gap,
                   alignContent: 'center',
-                  // transform ถูกเซ็ตโดย useLayoutEffect ด้านบนเมื่อเนื้อหาสูงเกินกล่อง
-                  transformOrigin: 'center center',
+                  width: UNI_BOX.w,
+                  // ค่าเริ่มต้นเท่านั้น — width / transform / จำนวนคอลัมน์จริง fitUniBlock เป็นคนเซ็ต
+                  // origin ต้องเป็น left เพราะกล่องถูกขยายให้กว้างเกิน 560 ก่อนย่อ
+                  // ถ้าใช้ center ภาพที่ย่อแล้วจะเลื่อนไปทางขวา
+                  transformOrigin: 'left center',
                 }}>
                   {grouped.map(g => {
                     const isOne      = grouped.length === 1;
                     const isVertical = grouped.length < 3;
-                    const logoSize   = isOne ? 200 : isVertical ? 120 : L.logo;
                     const uniSize    = isOne ? L.uni + 12 : isVertical ? L.uni + 4 : L.uni;
                     const facSize    = isOne ? L.fac + 8  : isVertical ? L.fac + 2 : L.fac;
                     const progSize   = isOne ? L.prog + 6 : isVertical ? L.prog + 2 : L.prog;
+                    const logoBox    = logoBoxSize(getAspect(g.logo_url));
                     const isConfirmed = !!g.groupConfirmed;
                     return (
-                      <div key={g.university_id || g.university_name} style={{
+                      <div key={g.groupKey} style={{
                         background: isConfirmed ? confirmBg : 'rgba(255,255,255,0.1)',
                         border: isConfirmed ? `1.5px solid ${confirmBorder}` : '1px solid rgba(255,255,255,0.12)',
                         borderRadius: 12,
@@ -361,7 +528,7 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
                         {g.logo_url && (
                           <div
                             style={{
-                              width: logoSize, height: logoSize, flexShrink: 0,
+                              width: logoBox.w, height: logoBox.h, flexShrink: 0,
                               backgroundImage: `url(${resolveMediaUrl(g.logo_url)})`,
                               backgroundSize: 'contain',
                               backgroundPosition: 'center',
@@ -778,19 +945,11 @@ export default function ReportPage() {
     await document.fonts.ready;
   };
 
-  // Preload all image URLs before html2canvas
+  // โหลดรูปเข้าแคชกลางก่อนแคป — ได้ทั้ง data URL (ป้อนให้ modern-screenshot ตรง ๆ)
+  // และสัดส่วนภาพ (ใช้คิดขนาดกล่องโลโก้) โหลดครั้งเดียวต่อ URL ใช้ซ้ำได้ทุกการ์ด
+  // ของเดิมอุ่นแค่แคชของ <img> ซึ่ง modern-screenshot ไม่ได้ใช้ เลยช่วยอะไรไม่ได้จริง
   const preloadImages = async (urls) => {
-    await Promise.all(
-      urls.filter(Boolean).map(
-        url => new Promise(resolve => {
-          const img = new window.Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = resolve;
-          img.onerror = resolve;
-          img.src = url;
-        })
-      )
-    );
+    await Promise.all([...new Set(urls.filter(Boolean))].map(loadMedia));
   };
 
   // เรนเดอร์การ์ดนักเรียน 1 ใบ → <canvas> (ใช้ร่วมกันทั้ง ZIP และ PDF)
@@ -833,10 +992,15 @@ export default function ReportPage() {
         scale,
         backgroundColor: '#0f0c29',
         fetch: { requestInit: { mode: 'cors' } },
+        // ป้อนรูปจากแคชกลางเอง แทนปล่อยให้มัน fetch ใหม่ทุกใบ (โลโก้ตัวเดิมซ้ำหลักพันรอบ
+        // และพลาดครั้งเดียวคือโลโก้หายเงียบ ๆ) — คืน null = ให้มันไปโหลดเองตามเดิม
+        fetchFn: async (url) => (await loadMedia(url))?.dataUrl || null,
       });
     } finally {
       root.unmount();
       document.body.removeChild(container);
+      // รูปนักเรียนใช้ครั้งเดียว ไม่มีใครใช้ซ้ำ — คืนแรมทันที ไม่งั้น export ทั้งรุ่นค้าง data URL หลายร้อยรูป
+      releaseMedia(resolveMediaUrl(student.photo_url));
     }
   };
 
@@ -918,6 +1082,9 @@ export default function ReportPage() {
     // สเกลย่อรายชื่อมหาวิทยาลัยถูกคำนวณจากความสูงที่วัดในหน้านี้ แล้วฝังติดไปกับ HTML
     // จึงต้องวัดตอนฟอนต์จริงพร้อมแล้ว ไม่งั้นได้ค่าจากฟอนต์สำรองซึ่งสูงกว่า
     await ensureCardFonts();
+    // ขนาดกล่องโลโก้ก็ฝังไปกับ HTML เหมือนกัน ต้องรู้สัดส่วนโลโก้ก่อนเรนเดอร์
+    // (โลโก้ใช้ร่วมกันหลายคน โหลดรอบเดียวพอ — รูปนักเรียนไม่ต้องโหลด แท็บใหม่ดึงเองได้)
+    await preloadImages(arr.flatMap(s => (s.admissions || []).map(a => resolveMediaUrl(a.logo_url))));
     // เรนเดอร์การ์ดทุกคนเป็น HTML จริงก่อน แล้วคัด innerHTML ไปเปิดแท็บใหม่
     const container = document.createElement('div');
     container.style.cssText = 'position:fixed;left:-99999px;top:0;width:1080px;';

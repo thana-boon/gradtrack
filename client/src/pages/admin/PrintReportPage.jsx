@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { StudentCard, mergeStudentSettings, normCode } from './ReportPage';
+import { StudentCard, mergeStudentSettings, normCode, noteAspect } from './ReportPage';
 import { resolveMediaUrl } from '../../utils/mediaUrl';
 
 // โหลดรูปทั้งหมดล่วงหน้าแบบจำกัดจำนวนที่โหลดพร้อมกัน (กัน server ค้างจากการยิงพร้อมกันทีเดียว)
@@ -13,7 +13,9 @@ async function preloadAll(urls, concurrency, onProgress) {
   const loadOne = (url) =>
     new Promise((resolve) => {
       const img = new window.Image();
-      img.onload = resolve;
+      // จดสัดส่วนไว้ตั้งแต่ตรงนี้ — กล่องโลโก้คิดขนาดจากค่านี้ และหน้านี้สั่ง print เองอัตโนมัติ
+      // ถ้าปล่อยให้การ์ดไปโหลดเองทีหลังจะพิมพ์ทันด้วยขนาด fallback (กล่องจัตุรัส)
+      img.onload = () => { noteAspect(url, img); resolve(); };
       img.onerror = resolve; // รูปเสีย/หายก็ข้ามไป ไม่ให้ค้าง
       img.src = url;
     });

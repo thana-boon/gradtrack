@@ -11,7 +11,7 @@
 //   · ใช้ได้ครั้งเดียว ยิงซ้ำด้วยโค้ดเดิมจะได้ used_code → ต้องขอใหม่เสมอ
 //   · ล้มเหลวเมื่อไหร่ก็แค่ "แสดงหน้า login ตามปกติ" ห้ามทำให้หน้าเว็บค้างหรือพัง
 import api from './api';
-import { SCHOOLOS_HOME_KEY } from './session';
+import { SCHOOLOS_HOME_KEY, markSilentLogin } from './session';
 
 // เพดานรอคำตอบจาก SchoolOS — เกินกว่านี้ให้ไปแสดงฟอร์มเลย ดีกว่าปล่อยจอค้าง
 const PROBE_TIMEOUT_MS = 6000;
@@ -140,6 +140,9 @@ export async function trySilentLogin() {
   if (!code) return null;
 
   const res = await api.post('/auth/sso', { code });
+  // ประทับเวลาไว้ให้ตัวจับลูป — เข้าด้วยทางนี้แล้วหลุดซ้ำภายในไม่ถึงนาที
+  // แปลว่าพาเข้าไปก็หลุดอยู่ดี รอบหน้าต้องให้กรอกเอง (ดู mustLoginManually)
+  if (res.data?.token) markSilentLogin();
   return res.data;
 }
 

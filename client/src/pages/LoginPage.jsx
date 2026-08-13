@@ -6,10 +6,10 @@ import Icon from '../components/ui/Icon';
 import {
   IDLE_TIMEOUT_MINUTES,
   LOGOUT_REASONS,
-  MANUAL_LOGIN_REASONS,
   bouncedToSchoolOSRecently,
   getLogoutReason,
   leaveToSchoolOS,
+  mustLoginManually,
   wasRecentlyLoggedOut,
 } from '../utils/session';
 import { fetchLiveSession, isSilentLoginBlocked, trySilentLogin } from '../utils/sso';
@@ -32,10 +32,12 @@ const TIMEOUT_NOTICES = {
  *
  * ข้ามเมื่อ:
  *   · เพิ่งกดออกจากระบบ (ดู blockSilentLogin ใน utils/sso.js)
- *   · เพิ่ง token หมดอายุ/โดน 401 — ให้ SSO พาเข้าใหม่ทันทีเสี่ยงวนเป็นวง
- *     ("เพิ่ง" เท่านั้น ดู wasRecentlyLoggedOut)
+ *   · SSO เพิ่งพาเข้าไปแล้วหลุดกลับมาทันที = วนเป็นวงอยู่จริง (ดู mustLoginManually)
  *
  * แต่ **ไม่** ข้ามเมื่อ:
+ *   · token หมดอายุคาไว้เฉย ๆ — คนที่ไม่ได้เปิดระบบข้ามวันแล้วล็อกอิน SchoolOS ใหม่
+ *     เดินเข้ามาเจอ EXPIRED ตั้งแต่ยังไม่ทันยิง request แรก เขาควรถูกพาเข้าเลย
+ *     ไม่ใช่เจอฟอร์มเปล่ากับข้อความ "เซสชันหมดอายุ" ทั้งที่เพิ่งล็อกอินมาหมาด ๆ
  *   · หลุดเพราะตัวตนฝั่ง SchoolOS เปลี่ยน (SSO_ENDED/SSO_DENIED) — มีคนใหม่อยู่หน้าเครื่อง
  *     การบังคับให้เขากรอกรหัสเองไม่ได้เพิ่มความปลอดภัยอะไร มีแต่ทำให้เครื่องส่วนกลางใช้ยากขึ้น
  *   · หลุดเพราะ idle — ตัวคัดกรองจริงคือ SchoolOS เอง: ขอโค้ด handoff ได้ก็ต่อเมื่อ
@@ -43,9 +45,7 @@ const TIMEOUT_NOTICES = {
  *     (เคสที่แท็บนี้ถูกปิด/รีโหลดไป จนไม่มีใครคอยยืนยันให้นาฬิกา idle — ดู isIdleExpired)
  *     ลุกจากเครื่องไปจริง session ฝั่งโน้นก็หมดตามไปด้วย → ได้ฟอร์มพร้อมข้อความตามเดิม
  */
-const shouldSkipSso = () =>
-  isSilentLoginBlocked() ||
-  (wasRecentlyLoggedOut() && MANUAL_LOGIN_REASONS.includes(getLogoutReason()));
+const shouldSkipSso = () => isSilentLoginBlocked() || mustLoginManually();
 
 // ─── ทางเข้าสำรอง: /grad/login?local=1 ───────────────────────────────────────
 // บังคับให้เห็นฟอร์ม ไม่เด้งไป SchoolOS ไม่ว่ากรณีใด — สำหรับบัญชี admin local
@@ -68,8 +68,8 @@ const wantsLocalForm = () => new URLSearchParams(window.location.search).has('lo
  * และคืน null เมื่อปิด SSO ไว้ด้วย จึงคุมเคส SSO_SILENT_LOGIN=0 ไปในตัว)
  *
  * ⚠️ ตัวนี้ **ไม่**ผูกกับ shouldSkipSso() — "ไม่พา SSO เข้าให้อัตโนมัติ" กับ "ปล่อยให้
- * ยืนอยู่ที่ฟอร์มได้" เป็นคนละเรื่องกัน คนที่เพิ่งโดน 401 ก็ยังต้องไปเข้าระบบที่ SchoolOS
- * เหมือนกัน แค่ตอนกลับเข้ามาต้องผ่านมือ ไม่ใช่ถูกพาเข้าเงียบ ๆ (ดู MANUAL_LOGIN_REASONS)
+ * ยืนอยู่ที่ฟอร์มได้" เป็นคนละเรื่องกัน คนที่ติดตัวจับลูปอยู่ก็ยังต้องไปเข้าระบบที่ SchoolOS
+ * เหมือนกัน แค่ตอนกลับเข้ามาต้องผ่านมือ ไม่ใช่ถูกพาเข้าเงียบ ๆ (ดู mustLoginManually)
  *
  * ห้ามเด้งอีกสามกรณี:
  *   · เพิ่งกดออกจากระบบ (isSilentLoginBlocked) — ตอนนั้น leaveToPortal() กำลังพาไป

@@ -67,11 +67,19 @@ const wantsLocalForm = () => new URLSearchParams(window.location.search).has('lo
  * (fetchLiveSession คืน null เมื่อถามไม่ได้ · valid:false เมื่อ "ไม่มีใครล็อกอิน" จริง ๆ
  * และคืน null เมื่อปิด SSO ไว้ด้วย จึงคุมเคส SSO_SILENT_LOGIN=0 ไปในตัว)
  *
- * นอกจากนั้นยังห้ามเด้งเมื่อ เพิ่งเด้งไปมาแล้วรอบหนึ่ง (bouncedToSchoolOSRecently —
- * ตัวกันเดินวน) หรือขอฟอร์มมาเอง (?local=1)
+ * ⚠️ ตัวนี้ **ไม่**ผูกกับ shouldSkipSso() — "ไม่พา SSO เข้าให้อัตโนมัติ" กับ "ปล่อยให้
+ * ยืนอยู่ที่ฟอร์มได้" เป็นคนละเรื่องกัน คนที่เพิ่งโดน 401 ก็ยังต้องไปเข้าระบบที่ SchoolOS
+ * เหมือนกัน แค่ตอนกลับเข้ามาต้องผ่านมือ ไม่ใช่ถูกพาเข้าเงียบ ๆ (ดู MANUAL_LOGIN_REASONS)
+ *
+ * ห้ามเด้งอีกสามกรณี:
+ *   · เพิ่งกดออกจากระบบ (isSilentLoginBlocked) — ตอนนั้น leaveToPortal() กำลังพาไป
+ *     /users/api/auth/logout อยู่ ถ้าชิงเด้งไป portal ตัดหน้า จะกลายเป็นไม่ได้ออกจาก
+ *     SchoolOS จริง แล้วรอบหน้า SSO ก็พากลับเข้ามาเอง = ล็อกเอาต์ไม่ได้บนเครื่องส่วนกลาง
+ *   · เพิ่งเด้งไปมาแล้วรอบหนึ่ง (bouncedToSchoolOSRecently) — ตัวกันเดินวน
+ *   · ขอฟอร์มมาเอง (?local=1)
  */
 const shouldBounceToSchoolOS = async () => {
-  if (wantsLocalForm() || bouncedToSchoolOSRecently()) return false;
+  if (wantsLocalForm() || isSilentLoginBlocked() || bouncedToSchoolOSRecently()) return false;
   const live = await fetchLiveSession();
   return Boolean(live) && !live.valid;
 };
@@ -101,6 +109,7 @@ export default function LoginPage() {
   const [checkingSso, setCheckingSso] = useState(() => !shouldSkipSso());
   const ssoBusy = useRef(false);    // กำลังลองอยู่ ห้ามยิงซ้อน
   const ssoLastTry = useRef(0);     // กันยิงรัวตอนสลับแท็บถี่ ๆ
+  const mountAttempted = useRef(false); // ยิงรอบแรกไปแล้ว — กัน effect ที่รันซ้ำยิงซ้อน
   const mounted = useRef(true);
   // ผู้ใช้เริ่มพิมพ์/กดเข้าสู่ระบบแล้ว = ตั้งใจใช้บัญชีที่กรอกเอง ห้าม SSO แย่งพาเข้า
   const formTouched = useRef(false);
@@ -119,8 +128,13 @@ export default function LoginPage() {
     const attempt = async (background) => {
       if (ssoBusy.current) return;
       // ธงกันอาจหมดอายุไปแล้วตั้งแต่ตอนเปิดหน้า จึงต้องอ่านใหม่ทุกครั้ง ไม่ใช้ค่าที่คิดไว้
-      if (shouldSkipSso()) return;
+      //
+      // ⚠️ skipSso กันแค่ "การพาเข้าเงียบ ๆ" ห้าม return ทิ้งทั้งฟังก์ชัน — ด่านเด้งกลับ
+      // SchoolOS ข้างล่างต้องได้ทำงานทุกครั้งที่เปิดหน้านี้ ไม่งั้นคนที่เพิ่งโดน 401
+      // จะยืนอยู่ที่ฟอร์มได้ ทั้งที่ไม่มี session ฝั่ง SchoolOS ให้ใช้
+      const skipSso = shouldSkipSso();
       if (background) {
+        if (skipSso) return;
         if (formTouched.current) return;
         if (Date.now() - ssoLastTry.current < SSO_RETRY_GAP_MS) return;
       }
@@ -128,14 +142,16 @@ export default function LoginPage() {
       ssoBusy.current = true;
       ssoLastTry.current = Date.now();
       try {
-        const data = await trySilentLogin();
-        if (mounted.current && data?.token) {
-          login(data.user, data.token);
-          navigate(data.user.role === 'student' ? '/student' : '/dashboard', { replace: true });
-          return; // ออกจากหน้านี้แล้ว ไม่ต้องปิดสถานะกำลังตรวจสอบ
+        if (!skipSso) {
+          const data = await trySilentLogin();
+          if (mounted.current && data?.token) {
+            login(data.user, data.token);
+            navigate(data.user.role === 'student' ? '/student' : '/dashboard', { replace: true });
+            return; // ออกจากหน้านี้แล้ว ไม่ต้องปิดสถานะกำลังตรวจสอบ
+          }
         }
 
-        // เข้าเงียบ ๆ ไม่ได้ = ไม่มีใครล็อกอิน SchoolOS อยู่ → ส่งไปล็อกอินที่นั่น
+        // ยังไม่มี session ที่ใช้ได้ → ฟอร์มนี้ไม่ใช่ที่ที่ควรยืนอยู่ ส่งไปล็อกอินที่ SchoolOS
         //
         // เฉพาะรอบแรกตอนเปิดหน้าเท่านั้น (background = กลับมาที่แท็บ) — คนที่เปิดแท็บนี้
         // ค้างไว้แล้วสลับกลับมาไม่ควรถูกดึงออกจากหน้าที่กำลังดูอยู่ ปล่อยให้เขาลองใหม่เอง
@@ -155,7 +171,12 @@ export default function LoginPage() {
       if (mounted.current) setCheckingSso(false);
     };
 
-    if (checkingSso) attempt(false);
+    // รอบแรกตอนเปิดหน้าต้องยิงเสมอ ไม่ผูกกับ checkingSso (ซึ่งเป็นแค่ธงโชว์สปินเนอร์
+    // ของ silent SSO) — คนที่ข้าม SSO ก็ยังต้องผ่านด่านเด้งกลับ SchoolOS เหมือนกัน
+    if (!mountAttempted.current) {
+      mountAttempted.current = true;
+      attempt(false);
+    }
 
     // กลับมาที่แท็บ/หน้าต่างนี้อีกครั้ง → ลองใหม่
     //

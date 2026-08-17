@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import * as XLSX from 'xlsx';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import {
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, LabelList,
+} from 'recharts';
 import { domToCanvas } from 'modern-screenshot';
 import { saveAs } from 'file-saver';
 import api from '../../utils/api';
@@ -16,6 +19,15 @@ const PIE_COLORS = [
   '#15803d','#2563eb','#e11d48','#a855f7','#d97706','#059669',
   '#1d4ed8','#f472b6',
 ];
+
+// กราฟแท่ง: ความยาวแท่งบอกจำนวนอยู่แล้ว สีจึงไม่ต้องแยกหมวด — ใช้สีเดียวทั้งกราฟ
+// (ปัญหาของวงกลมคือพอหมวดเกิน 20 สีใน PIE_COLORS ก็เริ่มวนซ้ำ แยกไม่ออกว่าชิ้นไหนเป็นใคร)
+const BAR_COLOR = '#5b2d8e';
+const BAR_TAIL_COLOR = '#b3a3c6';  // แท่ง "อื่น ๆ" ที่ยุบหางมารวมกัน — ไม่ใช่หมวดจริง เลยให้จางกว่า
+const BAR_LABEL_WIDTH = 260;       // ที่สำหรับชื่อคณะ/มหาวิทยาลัยภาษาไทยที่ยาวมาก
+const BAR_NAME_MAX = 60;           // แกนตัดคำขึ้นบรรทัดที่สองให้เองแล้ว เผื่อไว้ราวสองบรรทัด แล้วค่อยตัดท้ายด้วย …
+const BAR_ROW_H = 34;              // สูงพอให้ชื่อที่ตกไปสองบรรทัดไม่ชนแท่งบน-ล่าง
+const TOP_N_OPTIONS = [10, 15, 20, 0]; // 0 = ไม่ยุบ แสดงครบทุกหมวด
 
 const THAI_MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
 const THAI_YEARS = Array.from({ length: 16 }, (_, i) => 2560 + i); // พ.ศ. 2560–2575
@@ -40,10 +52,11 @@ const FACULTY_SORTS = [
 
 // กราฟในหน้าต่างวิเคราะห์ — เลือกได้ว่าจะบันทึกอันไหนบ้าง
 // (บันทึกทีเดียวทั้งสามอันได้ภาพยาวมากจนเอาไปวางในเอกสารลำบาก)
+// unit = ลักษณนามที่ใช้ตอนยุบหางในกราฟแท่ง เช่น "อื่น ๆ (52 คณะ)"
 const CHART_DEFS = [
-  { key: 'uni',  title: 'มหาวิทยาลัยที่สอบติด',    short: 'มหาวิทยาลัย', sheet: 'มหาวิทยาลัย',   head: 'มหาวิทยาลัย' },
-  { key: 'fac',  title: 'คณะที่สอบติด',            short: 'คณะ',        sheet: 'คณะ',          head: 'คณะ' },
-  { key: 'prog', title: 'สาขา/กลุ่มวิชาที่สอบติด', short: 'สาขา',       sheet: 'สาขากลุ่มวิชา', head: 'สาขา/กลุ่มวิชา' },
+  { key: 'uni',  title: 'มหาวิทยาลัยที่สอบติด',    short: 'มหาวิทยาลัย', sheet: 'มหาวิทยาลัย',   head: 'มหาวิทยาลัย',   unit: 'แห่ง' },
+  { key: 'fac',  title: 'คณะที่สอบติด',            short: 'คณะ',        sheet: 'คณะ',          head: 'คณะ',          unit: 'คณะ' },
+  { key: 'prog', title: 'สาขา/กลุ่มวิชาที่สอบติด', short: 'สาขา',       sheet: 'สาขากลุ่มวิชา', head: 'สาขา/กลุ่มวิชา', unit: 'สาขา' },
 ];
 
 // คอลัมน์ประจำตัวนักเรียนใน PDF — บางรายงานที่ส่งออกไปข้างนอกไม่ควรมีรหัส/เลขที่ติดไปด้วย
@@ -58,6 +71,7 @@ const ALL_PDF_COLUMNS = { class: true, room: true, seat: true, code: true };
 
 const LS_PDF_COLS = 'gradtrack-report-pdf-columns';
 const LS_FAC_ORDER = 'gradtrack-report-faculty-order';
+const LS_CHART_VIEW = 'gradtrack-report-chart-view'; // { type: 'pie'|'bar', topN: number }
 
 const loadJSON = (key, fallback) => {
   try {
@@ -139,6 +153,90 @@ function ChartLegend({ data, total, colors, scroll = false }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+// ป้ายตัวเลขท้ายแท่ง — วาด <text> เองแทน <LabelList position="right">
+// เพราะ LabelList ส่ง "ความกว้างของแท่ง" ไปให้ตัวจัดข้อความของ recharts ใช้เป็นกรอบตัดคำ
+// แท่งสั้น ๆ เลยได้ป้ายที่ขึ้นบรรทัดใหม่กลางคัน เช่น "5" บรรทัดหนึ่ง "(3.4%)" อีกบรรทัด
+const BarValueLabel = ({ x, y, width, height, value, total }) => (
+  <text
+    x={x + width + 6}
+    y={y + height / 2}
+    dominantBaseline="central"
+    fill="currentColor"
+    fontSize={12}
+  >
+    {`${value} (${total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'}%)`}
+  </text>
+);
+
+// กราฟแท่งนอน — ทางเลือกแทนวงกลมสำหรับหมวดที่มีเยอะ
+// วงกลมอ่านรู้เรื่องได้ราว 6-7 ชิ้น แต่คณะมี 60+ หมวดและเกินครึ่งมีรายการเดียว
+// แท่งนอนแก้ได้สองเรื่องพร้อมกัน: เทียบค่าที่ใกล้กันได้ (13 กับ 12 ในวงกลมแทบแยกไม่ออก)
+// และวางชื่อไทยยาว ๆ ไว้บนแกนซ้ายได้เลย ไม่ต้องมี legend แยกอีกคอลัมน์
+function ChartBars({ data, total, unit, topN }) {
+  // data เรียงมาก→น้อยมาแล้วจาก buildChartData
+  const folded = topN > 0 && data.length > topN;
+  const tail = folded ? data.slice(topN) : [];
+  const rows = folded
+    ? [
+        ...data.slice(0, topN),
+        {
+          name: `อื่น ๆ (${tail.length} ${unit})`,
+          value: tail.reduce((sum, d) => sum + d.value, 0),
+          tail: true,
+        },
+      ]
+    : data;
+
+  const pct = (v) => (total > 0 ? ((v / total) * 100).toFixed(1) : '0.0');
+
+  return (
+    <>
+      {/* ความสูงคิดจากจำนวนแท่ง ไม่ใช่ค่าคงที่ — ไม่งั้นแท่งจะอ้วนผิดส่วนตอนมีไม่กี่หมวด */}
+      <ResponsiveContainer width="100%" height={rows.length * BAR_ROW_H + 20}>
+        <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 78, bottom: 4, left: 0 }}>
+          {/* ตัวเลขติดปลายแท่งอยู่แล้ว แกนล่างเลยไม่มีอะไรให้บอกเพิ่ม */}
+          <XAxis type="number" hide />
+          <YAxis
+            type="category"
+            dataKey="name"
+            width={BAR_LABEL_WIDTH}
+            interval={0}
+            tickLine={false}
+            axisLine={false}
+            tick={{ fontSize: 12, fill: 'currentColor' }}
+            tickFormatter={v => (v.length > BAR_NAME_MAX ? `${v.slice(0, BAR_NAME_MAX - 1)}…` : v)}
+          />
+          <Tooltip
+            cursor={{ fill: 'currentColor', fillOpacity: 0.06 }}
+            formatter={v => [`${v} รายการ (${pct(v)}%)`, 'จำนวน']}
+          />
+          <Bar dataKey="value" barSize={16} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+            {rows.map((d, i) => (
+              <Cell key={i} fill={d.tail ? BAR_TAIL_COLOR : BAR_COLOR} />
+            ))}
+            <LabelList dataKey="value" content={p => <BarValueLabel {...p} total={total} />} />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* หางที่ยุบไว้ยังต้องเปิดดูตัวเลขรายหมวดได้ ไม่งั้นข้อมูลหายไปจากหน้าจอเฉย ๆ
+          ปิดไว้ก่อนเพื่อให้ภาพที่ export ออกไปไม่ยาวเกินจำเป็น — กางไว้ก็ติดไปในภาพด้วย */}
+      {folded && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-xs text-base-content/55 hover:text-base-content">
+            ดูอีก {tail.length} {unit} ที่ยุบไว้ใน &quot;อื่น ๆ&quot;
+          </summary>
+          {/* จานสีชุดเดียว: รายการในหางไม่มีแท่งของตัวเองในกราฟ
+              ถ้าไล่สีให้จะกลายเป็นชี้ไปยังแท่งที่ไม่มีอยู่จริง */}
+          <div className="mt-2">
+            <ChartLegend data={tail} total={total} colors={[BAR_TAIL_COLOR]} scroll />
+          </div>
+        </details>
+      )}
+    </>
   );
 }
 
@@ -258,6 +356,14 @@ export default function AdmissionTableReportPage() {
   const [loading, setLoading] = useState(false);
   const [showChart, setShowChart] = useState(false);
   const [chartMode, setChartMode] = useState('all'); // 'all' | 'confirmed'
+  // รูปแบบกราฟ — จำไว้ข้ามครั้ง เพราะแต่ละคนมีแบบที่ตัวเองอ่านถนัดอยู่แบบเดียว
+  const [chartView, setChartView] = useState(() => {
+    const saved = loadJSON(LS_CHART_VIEW, {});
+    return {
+      type: saved.type === 'bar' ? 'bar' : 'pie',
+      topN: TOP_N_OPTIONS.includes(saved.topN) ? saved.topN : 10,
+    };
+  });
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [includeNoData, setIncludeNoData] = useState(true);
@@ -274,6 +380,14 @@ export default function AdmissionTableReportPage() {
   const chartAreaRef = useRef(null);
   const chartTitleRef = useRef(null);
   const pairGridRef = useRef(null);
+
+  const updateChartView = (patch) => {
+    setChartView(prev => {
+      const next = { ...prev, ...patch };
+      saveJSON(LS_CHART_VIEW, next);
+      return next;
+    });
+  };
 
   const togglePdfCol = (key) => {
     setPdfCols(prev => {
@@ -605,6 +719,7 @@ export default function AdmissionTableReportPage() {
     ? `เฉพาะที่บันทึก${dateFrom ? ` ตั้งแต่ ${thaiDate(dateFrom)}` : ''}${dateTo ? ` ถึง ${thaiDate(dateTo)}` : ''}`
     : '';
   const modeLabel = chartMode === 'confirmed' ? 'เฉพาะยืนยันสิทธิ์' : 'ทั้งหมดที่บันทึก';
+  const isBar = chartView.type === 'bar';
 
   // กราฟที่ติ๊กไว้ = สิ่งที่จะถูกบันทึก (ทั้งรูปและ Excel) และเป็นชื่อท้ายไฟล์ด้วย
   const pickedCharts = CHART_DEFS.filter(c => chartPick[c.key]);
@@ -886,8 +1001,8 @@ export default function AdmissionTableReportPage() {
                 </p>
               </div>
 
-              {/* สลับชุดข้อมูล */}
-              <div className="mb-3 flex flex-wrap gap-2" data-noexport>
+              {/* สลับชุดข้อมูล + รูปแบบกราฟ */}
+              <div className="mb-3 flex flex-wrap items-center gap-2" data-noexport>
                 <button
                   className={`btn btn-sm gap-1.5 ${chartMode === 'all' ? 'btn-primary' : 'btn-outline'}`}
                   onClick={() => setChartMode('all')}
@@ -904,6 +1019,46 @@ export default function AdmissionTableReportPage() {
                   เฉพาะยืนยันสิทธิ์แล้ว
                   <span className="font-semibold tabular-nums">{confirmedAdmissions.length}</span>
                 </button>
+
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  {/* ยุบหางได้เฉพาะกราฟแท่ง — วงกลมยุบไม่ได้ ชิ้น "อื่น ๆ" จะกลืนวงจนไม่เหลือข้อมูล */}
+                  {isBar && (
+                    <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-base-content/55">
+                      แสดง
+                      <select
+                        className="select select-sm"
+                        value={chartView.topN}
+                        onChange={e => updateChartView({ topN: Number(e.target.value) })}
+                      >
+                        {TOP_N_OPTIONS.map(n => (
+                          <option key={n} value={n}>
+                            {n === 0 ? 'ครบทุกหมวด' : `${n} อันดับแรก`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <div className="join">
+                    <button
+                      className={`btn join-item btn-sm gap-1.5 ${isBar ? 'btn-outline' : 'btn-primary'}`}
+                      onClick={() => updateChartView({ type: 'pie' })}
+                      aria-pressed={!isBar}
+                      title="กราฟวงกลม — เห็นสัดส่วนของทั้งหมด เหมาะกับหมวดไม่เกิน 6-7 หมวด"
+                    >
+                      <Icon name="pieChart" size={15} />
+                      วงกลม
+                    </button>
+                    <button
+                      className={`btn join-item btn-sm gap-1.5 ${isBar ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => updateChartView({ type: 'bar' })}
+                      aria-pressed={isBar}
+                      title="กราฟแท่ง — เรียงมาก→น้อย อ่านง่ายกว่าเมื่อมีหลายสิบหมวด"
+                    >
+                      <Icon name="barChart" size={15} />
+                      แท่ง
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* เลือกกราฟที่จะบันทึก — เก็บทีเดียวทั้งสามอันได้ภาพยาวเกินกว่าจะเอาไปใช้ต่อ */}
@@ -930,14 +1085,17 @@ export default function AdmissionTableReportPage() {
                 )}
               </div>
 
-              <div ref={pairGridRef} className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-                {CHART_DEFS.filter(c => c.key !== 'prog').map(({ key, title }) => {
+              {/* กราฟแท่งกินความกว้างเต็มแถว — ชื่อคณะ/มหาวิทยาลัยไทยยาวเกินกว่าจะวางสองคอลัมน์ */}
+              <div ref={pairGridRef} className={`grid gap-8 ${isBar ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-2'}`}>
+                {CHART_DEFS.filter(c => c.key !== 'prog').map(({ key, title, unit }) => {
                   const data = activeData[key];
                   return (
                   <section key={key} data-chartkey={key} className="flex flex-col gap-2">
                     <h3 className="text-center text-sm font-semibold">{title}</h3>
                     {data.length === 0 ? (
                       <p className="py-10 text-center text-sm text-base-content/45">ไม่มีข้อมูล</p>
+                    ) : isBar ? (
+                      <ChartBars data={data} total={activeTotal} unit={unit} topN={chartView.topN} />
                     ) : (
                       <>
                         <ResponsiveContainer width="100%" height={300}>
@@ -975,6 +1133,13 @@ export default function AdmissionTableReportPage() {
                 <h3 className="text-center text-sm font-semibold">สาขา/กลุ่มวิชาที่สอบติด</h3>
                 {activeData.prog.length === 0 ? (
                   <p className="py-10 text-center text-sm text-base-content/45">ไม่มีข้อมูล</p>
+                ) : isBar ? (
+                  <ChartBars
+                    data={activeData.prog}
+                    total={activeTotal}
+                    unit={CHART_DEFS.find(c => c.key === 'prog').unit}
+                    topN={chartView.topN}
+                  />
                 ) : (
                   <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
                     <ResponsiveContainer width="100%" height={350}>

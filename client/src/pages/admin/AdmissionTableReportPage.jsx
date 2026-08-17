@@ -165,7 +165,7 @@ function PdfColumnMenu({ cols, onToggle }) {
         คอลัมน์ PDF
         <span className="tabular-nums text-xs text-base-content/55">{picked}/{PDF_COLUMNS.length}</span>
       </summary>
-      <div className="dropdown-content z-30 mt-1 w-56 border border-base-300 bg-base-100 p-3 shadow-xl">
+      <div className="dropdown-content z-10 mt-1 w-56 border border-base-300 bg-base-100 p-3 shadow-xl">
         <p className="mb-2 text-xs leading-relaxed text-base-content/55">
           เลือกคอลัมน์ที่จะมีในไฟล์ PDF<br />
           (ชื่อ-นามสกุลมีให้เสมอ)
@@ -730,8 +730,10 @@ export default function AdmissionTableReportPage() {
 
         {/* สรุป + ตัวกรอง + ปุ่ม */}
         {/* ไม่ใส่ overflow-hidden: เมนู "คอลัมน์ PDF" ที่ลอยออกนอกการ์ดจะโดนตัดหาย
-            (การ์ดมีพื้นหลังของตัวเองที่โค้งมุมอยู่แล้ว ลูก ๆ ไม่มีพื้นหลังให้ต้องตัด) */}
-        <div className="card no-print anim-fade-up bg-base-100">
+            (การ์ดมีพื้นหลังของตัวเองที่โค้งมุมอยู่แล้ว ลูก ๆ ไม่มีพื้นหลังให้ต้องตัด)
+            relative z-20: anim-fade-up สร้าง stacking context ของตัวเอง เมนูที่ลอยอยู่ข้างใน
+            จึงยกตัวเหนือการ์ดใบถัดไปไม่ได้ ต้องยกทั้งการ์ดขึ้นมา (ต่ำกว่าแถบบน z-30 อยู่) */}
+        <div className="card no-print anim-fade-up relative z-20 bg-base-100">
           {/* ตัวเลขสรุป */}
           <dl className="grid grid-cols-2 divide-base-300 border-b border-base-300 sm:grid-cols-4 sm:divide-x">
             {[
@@ -1018,8 +1020,11 @@ export default function AdmissionTableReportPage() {
 
         {/* ── รายงานรายคณะ: คณะไหนมีใครติดบ้าง ยืนยันที่ไหน ── */}
         {!loading && (
-          <section className="mt-6">
-            <div className="no-print mb-3 flex flex-wrap items-center gap-3">
+          // relative z-10: ขังลำดับการซ้อนของส่วนนี้ไว้ใต้การ์ดสรุปด้านบน (z-20)
+          // เมนู "คอลัมน์ PDF" ของการ์ดบนจะได้ไม่โดนแถบเครื่องมือของส่วนนี้ทับ
+          <section className="relative z-10 mt-6">
+            {/* relative z-20: ให้เมนู "คอลัมน์ PDF" ลอยเหนือหัวตารางที่ค้างไว้ (z-10) ด้านล่าง */}
+            <div className="no-print relative z-20 mb-3 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2.5">
                 <span className="gt-chip size-8">
                   <Icon name="faculty" size={16} />

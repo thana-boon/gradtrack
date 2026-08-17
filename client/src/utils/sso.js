@@ -64,6 +64,22 @@ function loadConfig() {
 const usersUrl = (base, path) => `${base || ''}${path}`;
 
 /**
+ * ที่อยู่ที่จะส่งคนที่ไม่มี session ไปเข้าระบบ (= SCHOOLOS_PORTAL_URL)
+ *
+ * null = ไม่มีที่ให้ไป — ปิด silent SSO ไว้ หรืออ่านคอนฟิกจาก server ไม่ได้ ซึ่งทั้งคู่
+ * แปลว่าฟอร์มของเราคือทางเข้าเดียวที่เหลืออยู่ ห้ามพาออกไปไหน
+ *
+ * ต่างจาก schoolosHome() ใน utils/session.js ตรงที่ตัวนั้นอ่านค่าที่ cache ไว้แบบ sync
+ * (ใช้จาก axios interceptor ที่ await ไม่ได้) และ fallback เป็น "/" เสมอ ตัวนี้ใช้ตอน
+ * ตัดสินใจว่า "จะพาออกไปไหม" จึงต้องแยก "ไม่มีที่ให้ไป" ออกจาก "ไปหน้าแรกของโดเมนนี้"
+ */
+export async function portalTarget() {
+  const config = await loadConfig();
+  if (!config?.enabled) return null;
+  return String(config.portalUrl || '').trim() || null;
+}
+
+/**
  * ขอโค้ด handoff — คืน null เมื่อ "ยังไม่ได้ล็อกอิน SchoolOS" หรือขอไม่สำเร็จ
  * ทั้งสองกรณีจบเหมือนกันคือให้ผู้ใช้กรอกรหัสเอง จึงไม่ต้องแยก
  */

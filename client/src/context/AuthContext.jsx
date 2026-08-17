@@ -8,10 +8,12 @@ import {
   bounceAfterSessionEnd,
   clearActivity,
   clearStoredSession,
+  getLogoutReason,
   getTokenClaims,
   getTokenExpiry,
   isIdleExpired,
   isTokenExpired,
+  leaveAfterSessionEnd,
   markActivity,
   markPlatformActivity,
   msSinceActivity,
@@ -19,7 +21,6 @@ import {
   setLogoutReason,
   setSessionExpiredHandler,
 } from '../utils/session';
-import { withBase } from '../utils/withBase';
 import {
   blockSilentLogin,
   clearSilentLoginBlock,
@@ -92,9 +93,28 @@ function loadSession() {
   return { user, token };
 }
 
+// คลุมหน้าจอไว้ระหว่างที่การพาออกไป SchoolOS ยังเดินทางอยู่ (ดู leaving ข้างล่าง)
+function LeavingScreen() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-base-100"
+    >
+      <span className="loading loading-spinner loading-lg text-primary" />
+      <p className="text-sm text-base-content/60">กำลังออกจากระบบ…</p>
+    </div>
+  );
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(loadSession);
   const { user, token } = session;
+  // กำลังพาออกไป SchoolOS อยู่ — การเปลี่ยนหน้าจริงเป็น async (ต้องอ่านคอนฟิกก่อน)
+  // ถ้าปล่อยให้ตัวแอป render ต่อระหว่างนั้น ProtectedRoute จะเห็น user เป็น null แล้ว
+  // พาไปหน้า login ของเรา ผู้ใช้เลยเห็นฟอร์มแวบหนึ่งทุกครั้งที่กดออกจากระบบ ทั้งที่
+  // ปลายทางจริงคือ SchoolOS
+  const [leaving, setLeaving] = useState(false);
   const renewing = useRef(false); // กันขอต่ออายุซ้อนกันตอน interval มาชนกับ request ที่ยังค้าง
   const askingPlatform = useRef(false); // กันถาม SchoolOS ซ้อนกันตอนนาฬิกา idle หมดแล้ว
 
@@ -130,6 +150,7 @@ export function AuthProvider({ children }) {
   // จบด้วยการพาไป portal ของ SchoolOS ในการ navigate ครั้งเดียวกัน
   const logout = useCallback(() => {
     blockSilentLogin();
+    setLeaving(true);
     clearSession(null, { redirect: false });
     leaveToPortal();
   }, [clearSession]);
@@ -250,16 +271,20 @@ export function AuthProvider({ children }) {
     };
     document.addEventListener('visibilitychange', onVisible);
 
-    // อีกแท็บล็อกเอาต์/หมดเวลา → แท็บนี้หลุดตาม (ไม่งั้นแท็บที่เหลือยังใช้ได้ต่อ)
-    // แล้วไปรออยู่ที่หน้า login ของเรา — แท็บที่ค้างหน้า dashboard ไว้เฉย ๆ ทั้งที่หมด
-    // สิทธิ์แล้วคือสิ่งที่เรากำลังพยายามกำจัดบนเครื่องส่วนกลาง
+    // อีกแท็บล็อกเอาต์/หมดเวลา → แท็บนี้หลุดตาม (ไม่งั้นแท็บที่เหลือยังใช้ได้ต่อ) —
+    // แท็บที่ค้างหน้า dashboard ไว้เฉย ๆ ทั้งที่หมดสิทธิ์แล้วคือสิ่งที่เรากำลังพยายาม
+    // กำจัดบนเครื่องส่วนกลาง
+    //
+    // ปลายทางต้องเป็นชุดเดียวกับที่แท็บโน้นใช้ (leaveAfterSessionEnd) = SchoolOS
+    // เสมอ ยกเว้นเหตุผลที่ต้องจบที่ฟอร์มของเราเอง — เดิมตรงนี้พาไป /login ตายตัว
+    // เท่ากับว่าการหลุดในแท็บหนึ่งพาไป SchoolOS แต่แท็บที่เหลือไปจอดที่ฟอร์มแทน
     //
     // ห้ามล้าง storage ซ้ำ (แท็บโน้นล้างไปแล้ว และเขียนเหตุผลไว้ให้แล้ว) — เรียก
     // clearStoredSession ตรงนี้จะทับเหตุผลนั้นด้วย undefined แล้วข้อความหายไป
     const onStorage = (e) => {
       if (e.key === TOKEN_KEY && !e.newValue) {
         setSession({ user: null, token: null });
-        window.location.assign(withBase('/login'));
+        leaveAfterSessionEnd(getLogoutReason());
       }
     };
     window.addEventListener('storage', onStorage);
@@ -277,7 +302,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{ user, token, login, logout, idleTimeoutMs: IDLE_TIMEOUT_MS }}>
-      {children}
+      {leaving ? <LeavingScreen /> : children}
     </AuthContext.Provider>
   );
 }

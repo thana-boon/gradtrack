@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate, NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import Icon from '../components/ui/Icon';
 import Avatar from '../components/ui/Avatar';
 import AdminDashboard from '../components/dashboard/AdminDashboard';
@@ -123,7 +123,6 @@ function SidebarBody({ mini = false, menu, activePage, user, roleLabel, onLogout
 
 export default function DashboardPage({ activePage }) {
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
 
   // ครูจาก SchoolOS ที่ไม่ได้เป็น teacher-admin → เข้าหลังบ้านได้แต่แก้อะไรไม่ได้
@@ -150,10 +149,10 @@ export default function DashboardPage({ activePage }) {
     return () => document.removeEventListener('keydown', onKey);
   }, [drawerOpen]);
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
-  };
+  // logout() พาออกไป SchoolOS เอง (ออกจากแพลตฟอร์มด้วยในการ navigate ครั้งเดียว)
+  // — ห้าม navigate('/login') ต่อท้าย มันจะแข่งกับการเปลี่ยนหน้าจริงแล้วโชว์ฟอร์มของเรา
+  // แวบหนึ่งก่อนออกไป ทั้งที่ผู้ใช้ไม่เคยต้องเห็นหน้านั้น
+  const handleLogout = () => logout();
 
   const menu = ADMIN_MENU.filter((item) => !(item.adminOnly && isReadOnly));
   const current = menu.find((m) => m.key === (activePage || 'dashboard'));

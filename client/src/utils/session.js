@@ -41,9 +41,13 @@ const LOGOUT_AT_KEY = 'logoutAt';
 // ไฟล์นี้ถูกเรียกจาก axios interceptor ซึ่งรออะไรแบบ async ไม่ได้
 export const SCHOOLOS_HOME_KEY = 'schoolosHome';
 
-// "เพิ่งเด้งไป SchoolOS ไปแล้วรอบหนึ่ง" — ตัวกันลูป ดู bouncedToSchoolOSRecently()
+// "เพิ่งตัดสินใจเรื่องการเด้งไป SchoolOS ไปแล้วรอบหนึ่ง" — ตัวกันลูป
+// ดู bouncedToSchoolOSRecently()
+//
+// นานพอให้พิมพ์รหัสผ่านลงฟอร์มที่มันถอยกลับมาได้จนเสร็จ แต่สั้นพอที่การเปิดครั้งถัดไป
+// จะเป็นการตัดสินใจใหม่ ไม่ใช่ยกเว้นยาวจนคนที่ควรถูกพาไป SchoolOS ค้างอยู่ที่ฟอร์ม
 const BOUNCED_AT_KEY = 'schoolosBouncedAt';
-const BOUNCE_COOLDOWN_MS = 10 * 60 * 1000;
+const BOUNCE_COOLDOWN_MS = 5 * 60 * 1000;
 
 export const TOKEN_KEY = 'token';
 export const USER_KEY = 'user';
@@ -317,14 +321,25 @@ export function schoolosHome() {
  */
 const STAY_ON_LOGIN_REASONS = [LOGOUT_REASONS.SSO_DENIED];
 
+/**
+ * จำไว้ว่าเบราว์เซอร์นี้ "ตัดสินใจเรื่องการไป SchoolOS ไปแล้วรอบหนึ่ง"
+ *
+ * ทั้งตอนพาไปจริง และตอนที่ผู้ใช้กด "เข้าสู่ระบบที่หน้านี้แทน" — การเลือกอยู่ต่อก็เป็น
+ * การตัดสินใจที่ต้องรอดข้ามการ refresh เหมือนกัน ไม่งั้นผู้ดูแลที่พิมพ์รหัสผิดแล้วโหลด
+ * หน้าใหม่จะถูกส่งออกไปอีกรอบ
+ */
+export function markBouncedToSchoolOS() {
+  localStorage.setItem(BOUNCED_AT_KEY, String(Date.now()));
+}
+
 /** พาออกไป SchoolOS · ไม่แตะ session ฝั่งโน้น (คนละเรื่องกับปุ่ม "ออกจากระบบ") */
 export function leaveToSchoolOS() {
-  localStorage.setItem(BOUNCED_AT_KEY, String(Date.now()));
+  markBouncedToSchoolOS();
   window.location.assign(schoolosHome());
 }
 
 /**
- * เพิ่งถูกเด้งไป SchoolOS มาแล้วหรือเปล่า — **ตัวกันลูป ห้ามถอดออก**
+ * เพิ่งเด้งไป SchoolOS / เพิ่งเลือกที่จะอยู่ต่อ มาแล้วหรือเปล่า — **ตัวกันลูป ห้ามถอดออก**
  *
  * ลูปที่กันไว้: คนที่ไม่มี session ฝั่ง SchoolOS ให้ใช้ — บัญชี admin local ซึ่งเป็น
  * ทางเข้าสำรองตอน SchoolOS ล่ม · ครู/นักเรียนที่กรอกรหัสเอง · ตอน dev ที่ยังไม่ได้
@@ -340,15 +355,18 @@ export function bouncedToSchoolOSRecently() {
 }
 
 /**
- * จบ session แล้วพาออกไป — ปลายทางคือ SchoolOS เสมอ ยกเว้น STAY_ON_LOGIN_REASONS
+ * ออกจากหน้านี้ไปยังปลายทางของ session ที่จบแล้ว — SchoolOS เสมอ ยกเว้น
+ * STAY_ON_LOGIN_REASONS · **ไม่แตะ storage**
+ *
+ * แยกออกมาจาก bounceAfterSessionEnd() ให้แท็บที่รู้ข่าวจากแท็บอื่น (event storage)
+ * เรียกได้ด้วย — แท็บโน้นล้าง session และเขียนเหตุผลไว้ให้เรียบร้อยแล้ว ถ้าล้างซ้ำ
+ * ตรงนี้จะทับเหตุผลนั้นด้วย undefined แล้วข้อความที่ควรได้เห็นก็หายไป
  *
  * โหลดหน้าใหม่ทั้งหน้าเสมอ ห้ามใช้ router — หน้าที่ค้างอยู่ถูก render ไว้ให้คนเก่า
  * การ navigate ฝั่ง client จะ re-render จาก cache ก้อนเดิม ซึ่งบนเครื่องส่วนกลาง
  * แปลว่าคนถัดไปอาจเห็นข้อมูลของคนก่อนหน้าค้างอยู่
  */
-export function bounceAfterSessionEnd(reason) {
-  clearStoredSession(reason);
-
+export function leaveAfterSessionEnd(reason) {
   if (!STAY_ON_LOGIN_REASONS.includes(reason)) {
     leaveToSchoolOS();
     return;
@@ -359,6 +377,12 @@ export function bounceAfterSessionEnd(reason) {
   // (assign ไป path เดิมบางเบราว์เซอร์ไม่โหลดหน้าใหม่ให้)
   if (window.location.pathname === target) window.location.reload();
   else window.location.assign(target);
+}
+
+/** จบ session (ล้างของเราทิ้ง) แล้วพาออกไป */
+export function bounceAfterSessionEnd(reason) {
+  clearStoredSession(reason);
+  leaveAfterSessionEnd(reason);
 }
 
 // ─── สะพานระหว่าง axios interceptor กับ AuthContext ──────────────────────────

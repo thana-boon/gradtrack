@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import api from '../utils/api';
 import { resolveMediaUrl } from '../utils/mediaUrl';
 import PhotoUploadDialog from '../components/PhotoUploadDialog';
@@ -441,7 +440,6 @@ function AdmissionForm({ onSaved, onCancel }) {
 
 export default function StudentPage() {
   const { user, login, logout } = useAuth();
-  const navigate = useNavigate();
 
   // ── Quote ──
   const [quote, setQuote] = useState(user?.quote || '');
@@ -623,7 +621,8 @@ export default function StudentPage() {
     });
   };
 
-  const handleLogout = () => { logout(); navigate('/login'); };
+  // logout() พาออกไป SchoolOS เอง — ห้ามต่อท้ายด้วย navigate('/login') (ดู DashboardPage)
+  const handleLogout = () => logout();
 
   return (
     <div className="min-h-dvh bg-base-200">

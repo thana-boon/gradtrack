@@ -9,6 +9,7 @@ import StudentPage from './pages/StudentPage';
 // sidebar/topbar เดียวกัน — ที่นี่จึง import แค่หน้าที่ยืนอยู่นอกโครงแอป (print)
 import PrintReportPage from './pages/admin/PrintReportPage';
 import PrintAdmissionTablePage from './pages/admin/PrintAdmissionTablePage';
+import PrintFacultyReportPage from './pages/admin/PrintFacultyReportPage';
 
 export default function App() {
   return (
@@ -94,6 +95,7 @@ export default function App() {
           />
           <Route path="/admin/report/print" element={<PrintReportPage />} />
           <Route path="/admin/report-table/print" element={<PrintAdmissionTablePage />} />
+          <Route path="/admin/report-faculty/print" element={<PrintFacultyReportPage />} />
           <Route
             path="/admin/report-table"
             element={

@@ -26,7 +26,10 @@ export default function PrintAdmissionTablePage() {
     );
   }
 
-  const { flatRows, yearName } = data;
+  // cols: คอลัมน์ประจำตัวนักเรียนที่ผู้ใช้ติ๊กเลือกไว้ — ไฟล์เก่าที่ค้างใน localStorage
+  // ไม่มีคีย์นี้ ให้ถือว่าเอาทุกคอลัมน์เหมือนเดิม
+  const { flatRows, yearName, cols } = data;
+  const show = { class: true, room: true, seat: true, code: true, ...(cols || {}) };
 
   return (
     <>
@@ -60,10 +63,10 @@ export default function PrintAdmissionTablePage() {
         <thead>
           <tr>
             <th style={{ width: 28, textAlign: 'center' }}>ลำดับ</th>
-            <th style={{ width: 40, textAlign: 'center' }}>ชั้น</th>
-            <th style={{ width: 30, textAlign: 'center' }}>ห้อง</th>
-            <th style={{ width: 36, textAlign: 'center', whiteSpace: 'nowrap' }}>เลขที่</th>
-            <th style={{ width: 52, textAlign: 'center' }}>รหัส</th>
+            {show.class && <th style={{ width: 40, textAlign: 'center' }}>ชั้น</th>}
+            {show.room && <th style={{ width: 30, textAlign: 'center' }}>ห้อง</th>}
+            {show.seat && <th style={{ width: 36, textAlign: 'center', whiteSpace: 'nowrap' }}>เลขที่</th>}
+            {show.code && <th style={{ width: 52, textAlign: 'center' }}>รหัส</th>}
             <th style={{ minWidth: 100, textAlign: 'center' }}>ชื่อ-นามสกุล</th>
             <th style={{ minWidth: 160, textAlign: 'center' }}>มหาวิทยาลัย</th>
             <th style={{ minWidth: 140, textAlign: 'center' }}>คณะ</th>
@@ -77,10 +80,10 @@ export default function PrintAdmissionTablePage() {
               {r.isFirst && (
                 <>
                   <td rowSpan={r.rowSpan} style={{ textAlign: 'center', color: '#999' }}>{r.seq}</td>
-                  <td rowSpan={r.rowSpan}>{r.class_level}</td>
-                  <td rowSpan={r.rowSpan} style={{ textAlign: 'center' }}>{r.class_room}</td>
-                  <td rowSpan={r.rowSpan} style={{ textAlign: 'center' }}>{r.number_in_room}</td>
-                  <td rowSpan={r.rowSpan} style={{ fontFamily: 'monospace' }}>{r.student_code}</td>
+                  {show.class && <td rowSpan={r.rowSpan}>{r.class_level}</td>}
+                  {show.room && <td rowSpan={r.rowSpan} style={{ textAlign: 'center' }}>{r.class_room}</td>}
+                  {show.seat && <td rowSpan={r.rowSpan} style={{ textAlign: 'center' }}>{r.number_in_room}</td>}
+                  {show.code && <td rowSpan={r.rowSpan} style={{ fontFamily: 'monospace' }}>{r.student_code}</td>}
                   <td rowSpan={r.rowSpan} style={{ fontWeight: 600, whiteSpace: 'nowrap', textAlign: 'left' }}>{r.title_prefix}{r.first_name} {r.last_name}</td>
                 </>
               )}

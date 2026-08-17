@@ -35,7 +35,41 @@ const FACULTY_SORTS = [
   { key: 'confirmed', label: 'จำนวนที่ยืนยันสิทธิ์ (มาก → น้อย)' },
   { key: 'name',      label: 'ชื่อคณะ (ก → ฮ)' },
   { key: 'uni',       label: 'ชื่อมหาวิทยาลัย (ก → ฮ)' },
+  { key: 'custom',    label: 'กำหนดลำดับเอง' },
 ];
+
+// กราฟในหน้าต่างวิเคราะห์ — เลือกได้ว่าจะบันทึกอันไหนบ้าง
+// (บันทึกทีเดียวทั้งสามอันได้ภาพยาวมากจนเอาไปวางในเอกสารลำบาก)
+const CHART_DEFS = [
+  { key: 'uni',  title: 'มหาวิทยาลัยที่สอบติด',    short: 'มหาวิทยาลัย', sheet: 'มหาวิทยาลัย',   head: 'มหาวิทยาลัย' },
+  { key: 'fac',  title: 'คณะที่สอบติด',            short: 'คณะ',        sheet: 'คณะ',          head: 'คณะ' },
+  { key: 'prog', title: 'สาขา/กลุ่มวิชาที่สอบติด', short: 'สาขา',       sheet: 'สาขากลุ่มวิชา', head: 'สาขา/กลุ่มวิชา' },
+];
+
+// คอลัมน์ประจำตัวนักเรียนใน PDF — บางรายงานที่ส่งออกไปข้างนอกไม่ควรมีรหัส/เลขที่ติดไปด้วย
+// ชื่อ-นามสกุลไม่อยู่ในนี้เพราะต้องมีเสมอ (ไม่งั้นอ่านรายงานไม่รู้เรื่อง)
+const PDF_COLUMNS = [
+  { key: 'class', label: 'ชั้น' },
+  { key: 'room',  label: 'ห้อง' },
+  { key: 'seat',  label: 'เลขที่' },
+  { key: 'code',  label: 'รหัสประจำตัว' },
+];
+const ALL_PDF_COLUMNS = { class: true, room: true, seat: true, code: true };
+
+const LS_PDF_COLS = 'gradtrack-report-pdf-columns';
+const LS_FAC_ORDER = 'gradtrack-report-faculty-order';
+
+const loadJSON = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const saveJSON = (key, value) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* โควตาเต็ม/โหมดส่วนตัว — ไม่ใช่เรื่องคอขาดบาดตาย */ }
+};
 
 function ThaiDatePicker({ value, onChange }) {
   const parse = (v) => {
@@ -108,6 +142,114 @@ function ChartLegend({ data, total, colors, scroll = false }) {
   );
 }
 
+// เมนูติ๊กเลือกคอลัมน์ที่จะให้ติดไปในไฟล์ PDF (ใช้ร่วมกันทั้งรายงานตารางและรายงานรายคณะ)
+function PdfColumnMenu({ cols, onToggle }) {
+  const ref = useRef(null);
+
+  // <details> ไม่ปิดตัวเองเวลาคลิกนอกกล่อง ต้องปิดให้เอง ไม่งั้นเมนูค้างทับปุ่มอื่น
+  useEffect(() => {
+    const close = (e) => {
+      const el = ref.current;
+      if (el?.open && !el.contains(e.target)) el.open = false;
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, []);
+
+  const picked = PDF_COLUMNS.filter(c => cols[c.key]).length;
+
+  return (
+    <details ref={ref} className="dropdown dropdown-end">
+      <summary className="btn btn-ghost btn-sm gap-1.5">
+        <Icon name="filter" size={14} />
+        คอลัมน์ PDF
+        <span className="tabular-nums text-xs text-base-content/55">{picked}/{PDF_COLUMNS.length}</span>
+      </summary>
+      <div className="dropdown-content z-30 mt-1 w-56 border border-base-300 bg-base-100 p-3 shadow-xl">
+        <p className="mb-2 text-xs leading-relaxed text-base-content/55">
+          เลือกคอลัมน์ที่จะมีในไฟล์ PDF<br />
+          (ชื่อ-นามสกุลมีให้เสมอ)
+        </p>
+        {PDF_COLUMNS.map(c => (
+          <label key={c.key} className="flex cursor-pointer items-center gap-2 py-1">
+            <input
+              type="checkbox"
+              className="checkbox checkbox-sm checkbox-primary"
+              checked={!!cols[c.key]}
+              onChange={() => onToggle(c.key)}
+            />
+            <span className="text-sm">{c.label}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// จัดลำดับคณะเอง — ลากสลับได้ หรือกดลูกศรทีละขั้นสำหรับคนที่ลากไม่ถนัด/ใช้คีย์บอร์ด
+function FacultyOrderPanel({ names, onReorder, onReset }) {
+  const [dragIndex, setDragIndex] = useState(null);
+
+  const move = (from, to) => {
+    if (to < 0 || to >= names.length || from === to) return;
+    const next = [...names];
+    next.splice(to, 0, next.splice(from, 1)[0]);
+    onReorder(next);
+  };
+
+  if (names.length === 0) return null;
+
+  return (
+    <div className="no-print card mb-3 border border-base-300 bg-base-100 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <p className="text-xs text-base-content/60">
+          ลากสลับ หรือกดลูกศรเพื่อจัดลำดับคณะ — ลำดับนี้ถูกจำไว้ใช้ครั้งต่อไปด้วย
+        </p>
+        <button className="btn btn-ghost btn-xs ml-auto gap-1" onClick={onReset}>
+          <Icon name="undo" size={12} />
+          เรียงตามจำนวนเหมือนเดิม
+        </button>
+      </div>
+      <ol className="flex max-h-72 flex-col gap-1 overflow-y-auto pr-1">
+        {names.map((name, i) => (
+          <li
+            key={name}
+            draggable
+            onDragStart={() => setDragIndex(i)}
+            onDragOver={e => e.preventDefault()}
+            onDrop={e => { e.preventDefault(); if (dragIndex !== null) move(dragIndex, i); setDragIndex(null); }}
+            onDragEnd={() => setDragIndex(null)}
+            className={`flex cursor-grab items-center gap-2 rounded-lg border border-base-300 bg-base-200/40 px-2 py-1.5 text-sm ${
+              dragIndex === i ? 'opacity-40' : ''
+            }`}
+          >
+            <span className="w-6 shrink-0 text-center text-xs tabular-nums text-base-content/45">{i + 1}</span>
+            <span className="min-w-0 flex-1 truncate">{name}</span>
+            <span className="flex shrink-0 gap-0.5">
+              <button
+                className="btn btn-ghost btn-xs px-1"
+                onClick={() => move(i, i - 1)}
+                disabled={i === 0}
+                aria-label={`ย้าย ${name} ขึ้น`}
+              >
+                <Icon name="chevronUp" size={14} />
+              </button>
+              <button
+                className="btn btn-ghost btn-xs px-1"
+                onClick={() => move(i, i + 1)}
+                disabled={i === names.length - 1}
+                aria-label={`ย้าย ${name} ลง`}
+              >
+                <Icon name="chevronDown" size={14} />
+              </button>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export default function AdmissionTableReportPage() {
   const [yearId, setYearId] = useState('');
   const [yearName, setYearName] = useState('');
@@ -123,10 +265,30 @@ export default function AdmissionTableReportPage() {
   const [facSort, setFacSort] = useState('count');
   const [facGroupUni, setFacGroupUni] = useState(false);   // แยกคณะเดียวกันตามมหาวิทยาลัย
   const [facOnlyConfirmed, setFacOnlyConfirmed] = useState(false);
-  // ── export กราฟ ──
+  // ลำดับคณะที่ผู้ใช้จัดเอง (เก็บเป็นชื่อคณะ ไม่ใช่ key ของกลุ่ม — ลำดับจะได้ไม่หายเวลาสลับ "แยกตามมหาวิทยาลัย")
+  const [facOrder, setFacOrder] = useState(() => loadJSON(LS_FAC_ORDER, []));
+  // ── export ──
+  const [pdfCols, setPdfCols] = useState(() => ({ ...ALL_PDF_COLUMNS, ...loadJSON(LS_PDF_COLS, {}) }));
+  const [chartPick, setChartPick] = useState({ uni: true, fac: true, prog: true });
   const [chartExporting, setChartExporting] = useState(false);
   const chartAreaRef = useRef(null);
   const chartTitleRef = useRef(null);
+  const pairGridRef = useRef(null);
+
+  const togglePdfCol = (key) => {
+    setPdfCols(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveJSON(LS_PDF_COLS, next);
+      return next;
+    });
+  };
+
+  const applyFacOrder = (names) => {
+    // ชื่อที่เคยจัดไว้แต่ปีนี้ไม่มีข้อมูล เก็บต่อท้ายไว้ ไม่ให้ลำดับที่ตั้งไว้หายไปเวลาสลับปีการศึกษา
+    const next = [...names, ...facOrder.filter(n => !names.includes(n))];
+    setFacOrder(next);
+    saveJSON(LS_FAC_ORDER, next);
+  };
 
   const filterByDate = useCallback((admissions) => {
     if (!dateFrom && !dateTo) return admissions;
@@ -245,7 +407,10 @@ export default function AdmissionTableReportPage() {
 
   // ── Export PDF (print tab) ──
   const exportPdf = () => {
-    localStorage.setItem('gradtrack-table-print-data', JSON.stringify({ flatRows, yearName }));
+    localStorage.setItem(
+      'gradtrack-table-print-data',
+      JSON.stringify({ flatRows, yearName, cols: pdfCols })
+    );
     window.open(withBase('/admin/report-table/print'), '_blank');
   };
 
@@ -293,18 +458,31 @@ export default function AdmissionTableReportPage() {
       [...g.uniCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'th'))[0]?.[0] || '';
 
     const byName = (a, b) => a.faculty.localeCompare(b.faculty, 'th');
+    const byCount = (a, b) => b.codes.size - a.codes.size || byName(a, b);
+    // คณะที่ผู้ใช้ยังไม่ได้จัดลำดับให้ ไปต่อท้ายแล้วเรียงตามจำนวนกันเอง
+    const rank = (g) => {
+      const i = facOrder.indexOf(g.faculty);
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
     const SORTERS = {
-      count:     (a, b) => b.codes.size - a.codes.size || byName(a, b),
+      count:     byCount,
       confirmed: (a, b) => b.confirmed - a.confirmed || b.codes.size - a.codes.size || byName(a, b),
       name:      byName,
       uni:       (a, b) => mainUni(a).localeCompare(mainUni(b), 'th') || byName(a, b),
+      custom:    (a, b) => rank(a) - rank(b) || byCount(a, b),
     };
 
     const groups = [...map.values()];
     groups.forEach(g => { g.mainUni = mainUni(g); });
     groups.sort(SORTERS[facSort] || SORTERS.count);
     return groups;
-  }, [students, filterByDate, facGroupUni, facOnlyConfirmed, facSort]);
+  }, [students, filterByDate, facGroupUni, facOnlyConfirmed, facSort, facOrder]);
+
+  // ชื่อคณะเรียงตามที่แสดงอยู่จริง — ใช้เป็นรายการให้ลากจัดลำดับ (โหมดแยกมหาวิทยาลัยมีชื่อคณะซ้ำได้)
+  const facultyNames = useMemo(
+    () => [...new Set(facultyGroups.map(g => g.faculty))],
+    [facultyGroups]
+  );
 
   // คนคนเดียวติดหลายคณะได้ — ยอด "คน" ของทั้งรายงานจึงต้อง unique ข้ามกลุ่ม ไม่ใช่บวกยอดรายกลุ่ม
   const facultyStudentCount = new Set(facultyGroups.flatMap(g => [...g.codes])).size;
@@ -353,6 +531,36 @@ export default function AdmissionTableReportPage() {
     XLSX.writeFile(wb, `รายงานรายคณะ_${yearName}.xlsx`);
   };
 
+  // ── รายงานรายคณะ → PDF (เปิดหน้าพิมพ์ใน tab ใหม่) ──────────────────────────
+  // Set/Map ผ่าน JSON ไม่ได้ ต้องแปลงเป็นตัวเลขก่อนส่งให้หน้าพิมพ์
+  const exportFacultyPdf = () => {
+    const payload = {
+      yearName,
+      cols: pdfCols,
+      groupUni: facGroupUni,
+      onlyConfirmed: facOnlyConfirmed,
+      dateRangeLabel,
+      totals: {
+        faculties: facultyGroups.length,
+        students: facultyStudentCount,
+        rows: facultyRowCount,
+      },
+      groups: facultyGroups.map(g => ({
+        key: g.key,
+        faculty: g.faculty,
+        university: g.university,
+        campus: g.campus,
+        mainUni: g.mainUni,
+        uniCount: g.uniCount.size,
+        students: g.codes.size,
+        confirmed: g.confirmed,
+        rows: g.rows,
+      })),
+    };
+    localStorage.setItem('gradtrack-faculty-print-data', JSON.stringify(payload));
+    window.open(withBase('/admin/report-faculty/print'), '_blank');
+  };
+
   const totalStudents = students.length;
   const allAdmissions = students.flatMap(s => filterByDate(s.admissions || []));
   const confirmedAdmissions = allAdmissions.filter(a => a.confirmed);
@@ -398,19 +606,41 @@ export default function AdmissionTableReportPage() {
     : '';
   const modeLabel = chartMode === 'confirmed' ? 'เฉพาะยืนยันสิทธิ์' : 'ทั้งหมดที่บันทึก';
 
+  // กราฟที่ติ๊กไว้ = สิ่งที่จะถูกบันทึก (ทั้งรูปและ Excel) และเป็นชื่อท้ายไฟล์ด้วย
+  const pickedCharts = CHART_DEFS.filter(c => chartPick[c.key]);
+  const pickLabel = pickedCharts.length === CHART_DEFS.length
+    ? 'ทุกกราฟ'
+    : pickedCharts.map(c => c.short).join('-');
+
   // ── Export กราฟเป็นรูป ──────────────────────────────────────────────────────
   // เก็บภาพจาก "ชั้นในของกล่องที่เลื่อน" ไม่ใช่ตัวกล่องเอง — ถ้าเก็บจากกล่องที่มี
   // overflow-y-auto จะได้แค่ส่วนที่มองเห็นอยู่ กราฟที่เลื่อนลงไปหายหมด
   // ปุ่ม/ตัวสลับโหมดติด data-noexport ไว้ให้ตัดออกจากภาพ แล้วโชว์หัวเรื่องแทนเฉพาะตอนเก็บภาพ
   const exportChartPng = async () => {
     const node = chartAreaRef.current;
-    if (!node || chartExporting) return;
+    if (!node || chartExporting || pickedCharts.length === 0) return;
     setChartExporting(true);
     const title = chartTitleRef.current;
     if (title) title.style.display = 'block';
+    // ซ่อนกราฟที่ไม่ได้เลือก — เก็บทั้งสามอันทีเดียวได้ภาพยาวจนเอาไปใช้ต่อลำบาก
+    const hidden = [...node.querySelectorAll('[data-chartkey]')]
+      .filter(el => !chartPick[el.dataset.chartkey]);
+    for (const el of hidden) el.style.display = 'none';
+    // กราฟมหาวิทยาลัย/คณะวางคู่กันสองคอลัมน์ ถ้าเลือกไว้อันเดียวต้องยุบเหลือคอลัมน์เดียว
+    // ไม่งั้นภาพมีที่ว่างเปล่าอีกครึ่ง
+    const pairGrid = pairGridRef.current;
+    const pairCount = ['uni', 'fac'].filter(k => chartPick[k]).length;
+    const collapsePair = pairGrid && pairCount === 1;
+    if (collapsePair) pairGrid.style.gridTemplateColumns = 'minmax(0, 1fr)';
+    // เลือกเฉพาะกราฟสาขา: เส้นคั่นกับระยะห่างด้านบนไม่มีอะไรให้คั่นแล้ว เอาออกจากภาพ
+    const prog = pairCount === 0 && chartPick.prog ? node.querySelector('[data-chartkey="prog"]') : null;
+    if (prog) { prog.style.borderTop = 'none'; prog.style.marginTop = '0'; prog.style.paddingTop = '0'; }
     // คลายกล่องที่เลื่อนดู (ตารางสรุปสาขา) ให้สูงเต็มก่อน ไม่งั้นภาพได้แค่ส่วนที่เห็นอยู่
     const panels = [...node.querySelectorAll('[data-scrollpanel]')];
     for (const p of panels) { p.style.maxHeight = 'none'; p.style.overflow = 'visible'; }
+    // recharts วัดขนาดตัวเองผ่าน ResizeObserver ซึ่งไม่ทันทีทันใด — เปลี่ยนเลย์เอาต์แล้ว
+    // ต้องรอให้วาดใหม่เสร็จก่อน ไม่งั้นได้ภาพวงกลมที่ยังอยู่ตำแหน่งเดิม
+    if (collapsePair) await new Promise(r => setTimeout(r, 400));
     try {
       const bg = getComputedStyle(node).backgroundColor;
       const canvas = await domToCanvas(node, {
@@ -421,12 +651,15 @@ export default function AdmissionTableReportPage() {
       });
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       if (!blob) throw new Error('แปลงภาพไม่สำเร็จ');
-      saveAs(blob, `กราฟผลการสอบ_${yearName}_${modeLabel}.png`);
+      saveAs(blob, `กราฟผลการสอบ_${yearName}_${modeLabel}_${pickLabel}.png`);
     } catch (err) {
       console.error('บันทึกกราฟเป็นรูปไม่สำเร็จ', err);
       alert('บันทึกกราฟเป็นรูปไม่สำเร็จ ลองใหม่อีกครั้ง');
     } finally {
       if (title) title.style.display = 'none';
+      for (const el of hidden) el.style.display = '';
+      if (collapsePair) pairGrid.style.gridTemplateColumns = '';
+      if (prog) { prog.style.borderTop = ''; prog.style.marginTop = ''; prog.style.paddingTop = ''; }
       for (const p of panels) { p.style.maxHeight = ''; p.style.overflow = ''; }
       setChartExporting(false);
     }
@@ -434,25 +667,21 @@ export default function AdmissionTableReportPage() {
 
   // ── Export ตัวเลขในกราฟเป็น Excel ──────────────────────────────────────────
   const exportChartExcel = () => {
+    if (pickedCharts.length === 0) return;
     const wb = XLSX.utils.book_new();
-    const sheets = [
-      { name: 'มหาวิทยาลัย',    head: 'มหาวิทยาลัย',      data: activeData.uni },
-      { name: 'คณะ',           head: 'คณะ',              data: activeData.fac },
-      { name: 'สาขากลุ่มวิชา',  head: 'สาขา/กลุ่มวิชา',   data: activeData.prog },
-    ];
-    for (const s of sheets) {
-      const rows = s.data.map((d, i) => ({
+    for (const c of pickedCharts) {
+      const rows = activeData[c.key].map((d, i) => ({
         'ลำดับ': i + 1,
-        [s.head]: d.name,
+        [c.head]: d.name,
         'จำนวน (รายการ)': d.value,
         'สัดส่วน (%)': activeTotal > 0 ? Number(((d.value / activeTotal) * 100).toFixed(1)) : 0,
       }));
-      rows.push({ 'ลำดับ': '', [s.head]: 'รวม', 'จำนวน (รายการ)': activeTotal, 'สัดส่วน (%)': activeTotal > 0 ? 100 : 0 });
+      rows.push({ 'ลำดับ': '', [c.head]: 'รวม', 'จำนวน (รายการ)': activeTotal, 'สัดส่วน (%)': activeTotal > 0 ? 100 : 0 });
       const ws = XLSX.utils.json_to_sheet(rows);
       ws['!cols'] = [{ wch: 7 }, { wch: 40 }, { wch: 15 }, { wch: 13 }];
-      XLSX.utils.book_append_sheet(wb, ws, s.name);
+      XLSX.utils.book_append_sheet(wb, ws, c.sheet);
     }
-    XLSX.writeFile(wb, `กราฟผลการสอบ_${yearName}_${modeLabel}.xlsx`);
+    XLSX.writeFile(wb, `กราฟผลการสอบ_${yearName}_${modeLabel}_${pickLabel}.xlsx`);
   };
 
   return (
@@ -500,7 +729,9 @@ export default function AdmissionTableReportPage() {
         </div>
 
         {/* สรุป + ตัวกรอง + ปุ่ม */}
-        <div className="card no-print anim-fade-up overflow-hidden bg-base-100">
+        {/* ไม่ใส่ overflow-hidden: เมนู "คอลัมน์ PDF" ที่ลอยออกนอกการ์ดจะโดนตัดหาย
+            (การ์ดมีพื้นหลังของตัวเองที่โค้งมุมอยู่แล้ว ลูก ๆ ไม่มีพื้นหลังให้ต้องตัด) */}
+        <div className="card no-print anim-fade-up bg-base-100">
           {/* ตัวเลขสรุป */}
           <dl className="grid grid-cols-2 divide-base-300 border-b border-base-300 sm:grid-cols-4 sm:divide-x">
             {[
@@ -551,7 +782,7 @@ export default function AdmissionTableReportPage() {
               <span className="text-sm">รวมนักเรียนที่ไม่มีข้อมูล</span>
             </label>
 
-            <div className="ml-auto flex flex-wrap gap-2">
+            <div className="ml-auto flex flex-wrap items-center gap-2">
               <button
                 className="btn btn-outline btn-sm gap-1.5"
                 onClick={exportExcel}
@@ -560,6 +791,7 @@ export default function AdmissionTableReportPage() {
                 <Icon name="sheet" size={15} />
                 Excel
               </button>
+              <PdfColumnMenu cols={pdfCols} onToggle={togglePdfCol} />
               <button
                 className="btn btn-outline btn-sm gap-1.5"
                 onClick={exportPdf}
@@ -608,8 +840,8 @@ export default function AdmissionTableReportPage() {
                   <button
                     className="btn btn-outline btn-sm gap-1.5"
                     onClick={exportChartPng}
-                    disabled={chartExporting}
-                    title="บันทึกกราฟทั้งหน้าเป็นไฟล์รูป .png"
+                    disabled={chartExporting || pickedCharts.length === 0}
+                    title="บันทึกกราฟที่เลือกไว้เป็นไฟล์รูป .png"
                   >
                     {chartExporting ? (
                       <span className="loading loading-spinner loading-xs" />
@@ -621,7 +853,8 @@ export default function AdmissionTableReportPage() {
                   <button
                     className="btn btn-outline btn-sm gap-1.5"
                     onClick={exportChartExcel}
-                    title="ส่งออกตัวเลขในกราฟเป็น Excel"
+                    disabled={pickedCharts.length === 0}
+                    title="ส่งออกตัวเลขของกราฟที่เลือกไว้เป็น Excel"
                   >
                     <Icon name="sheet" size={15} />
                     Excel
@@ -652,7 +885,7 @@ export default function AdmissionTableReportPage() {
               </div>
 
               {/* สลับชุดข้อมูล */}
-              <div className="mb-6 flex flex-wrap gap-2" data-noexport>
+              <div className="mb-3 flex flex-wrap gap-2" data-noexport>
                 <button
                   className={`btn btn-sm gap-1.5 ${chartMode === 'all' ? 'btn-primary' : 'btn-outline'}`}
                   onClick={() => setChartMode('all')}
@@ -671,12 +904,35 @@ export default function AdmissionTableReportPage() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-                {[
-                  { key: 'uni', title: 'มหาวิทยาลัยที่สอบติด', data: activeData.uni },
-                  { key: 'fac', title: 'คณะที่สอบติด', data: activeData.fac },
-                ].map(({ key, title, data }) => (
-                  <section key={key} className="flex flex-col gap-2">
+              {/* เลือกกราฟที่จะบันทึก — เก็บทีเดียวทั้งสามอันได้ภาพยาวเกินกว่าจะเอาไปใช้ต่อ */}
+              <div
+                className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border border-base-300 bg-base-200/40 px-3 py-2"
+                data-noexport
+              >
+                <span className="whitespace-nowrap text-xs text-base-content/60">
+                  เลือกกราฟที่จะบันทึก
+                </span>
+                {CHART_DEFS.map(c => (
+                  <label key={c.key} className="flex cursor-pointer items-center gap-2 whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm checkbox-primary"
+                      checked={!!chartPick[c.key]}
+                      onChange={e => setChartPick(p => ({ ...p, [c.key]: e.target.checked }))}
+                    />
+                    <span className="text-sm">{c.short}</span>
+                  </label>
+                ))}
+                {pickedCharts.length === 0 && (
+                  <span className="text-xs text-error">เลือกอย่างน้อย 1 กราฟ</span>
+                )}
+              </div>
+
+              <div ref={pairGridRef} className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+                {CHART_DEFS.filter(c => c.key !== 'prog').map(({ key, title }) => {
+                  const data = activeData[key];
+                  return (
+                  <section key={key} data-chartkey={key} className="flex flex-col gap-2">
                     <h3 className="text-center text-sm font-semibold">{title}</h3>
                     {data.length === 0 ? (
                       <p className="py-10 text-center text-sm text-base-content/45">ไม่มีข้อมูล</p>
@@ -708,11 +964,12 @@ export default function AdmissionTableReportPage() {
                       </>
                     )}
                   </section>
-                ))}
+                  );
+                })}
               </div>
 
               {/* สาขา — เต็มความกว้าง */}
-              <section className="mt-8 flex flex-col gap-2 border-t border-base-300 pt-6">
+              <section data-chartkey="prog" className="mt-8 flex flex-col gap-2 border-t border-base-300 pt-6">
                 <h3 className="text-center text-sm font-semibold">สาขา/กลุ่มวิชาที่สอบติด</h3>
                 {activeData.prog.length === 0 ? (
                   <p className="py-10 text-center text-sm text-base-content/45">ไม่มีข้อมูล</p>
@@ -818,8 +1075,27 @@ export default function AdmissionTableReportPage() {
                   <Icon name="sheet" size={15} />
                   Excel
                 </button>
+
+                <PdfColumnMenu cols={pdfCols} onToggle={togglePdfCol} />
+
+                <button
+                  className="btn btn-outline btn-sm gap-1.5"
+                  onClick={exportFacultyPdf}
+                  disabled={facultyGroups.length === 0}
+                >
+                  <Icon name="print" size={15} />
+                  PDF
+                </button>
               </div>
             </div>
+
+            {facSort === 'custom' && (
+              <FacultyOrderPanel
+                names={facultyNames}
+                onReorder={applyFacOrder}
+                onReset={() => { setFacOrder([]); saveJSON(LS_FAC_ORDER, []); }}
+              />
+            )}
 
             <TableWrap sticky className="anim-fade-up">
               <table className="table table-sm">

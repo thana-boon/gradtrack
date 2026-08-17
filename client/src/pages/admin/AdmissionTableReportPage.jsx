@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from 'react';
 import * as XLSX from 'xlsx';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import { domToCanvas } from 'modern-screenshot';
+import { saveAs } from 'file-saver';
 import api from '../../utils/api';
 import { withBase } from '../../utils/withBase';
 import Icon from '../../components/ui/Icon';
-import { PageHeader } from '../../components/ui';
+import { PageHeader, TableWrap, EmptyState, Tag } from '../../components/ui';
 
 // จานสีกราฟ: ไล่จากสีหลักของแบรนด์ (ม่วง → ทอง → เขียว → น้ำเงิน → แดง) แล้ววนโทนใกล้เคียง
 // เรียงให้สีที่อยู่ติดกันต่างกันชัด เพราะ pie chart วางชิ้นติดกัน
@@ -17,6 +19,23 @@ const PIE_COLORS = [
 
 const THAI_MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
 const THAI_YEARS = Array.from({ length: 16 }, (_, i) => 2560 + i); // พ.ศ. 2560–2575
+
+// 'YYYY-MM-DD' → '5 มี.ค. 2569' (ไว้ใส่ในภาพ/ไฟล์ที่ export ให้รู้ว่ากรองช่วงไหนไว้)
+const thaiDate = (iso) => {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${d} ${THAI_MONTHS[m - 1] || ''} ${y + 543}`;
+};
+
+// ── รายงานรายคณะ: ตัวเลือกการเรียง ──────────────────────────────────────────
+// ผู้ใช้เลือกได้ว่าจะให้คณะไหนขึ้นก่อน — คนดูรายงานคนละคนสนใจคนละมุม
+// (หัวหน้าระดับดูว่าคณะไหนคนติดเยอะ, ฝ่ายแนะแนวไล่หาคณะตามชื่อ)
+const FACULTY_SORTS = [
+  { key: 'count',     label: 'จำนวนนักเรียนที่ติด (มาก → น้อย)' },
+  { key: 'confirmed', label: 'จำนวนที่ยืนยันสิทธิ์ (มาก → น้อย)' },
+  { key: 'name',      label: 'ชื่อคณะ (ก → ฮ)' },
+  { key: 'uni',       label: 'ชื่อมหาวิทยาลัย (ก → ฮ)' },
+];
 
 function ThaiDatePicker({ value, onChange }) {
   const parse = (v) => {
@@ -66,8 +85,12 @@ function ThaiDatePicker({ value, onChange }) {
 
 // ตารางสรุปตัวเลขในกราฟ — คนอ่านหน้าจอ/คนตาบอดสีต้องได้ข้อมูลเท่ากับคนที่เห็นสี
 function ChartLegend({ data, total, colors, scroll = false }) {
+  // data-scrollpanel: ตอน export เป็นรูปต้องคลายความสูงออกก่อน ไม่งั้นรายการที่เลื่อนดูหายไปจากภาพ
   return (
-    <ul className={`flex flex-col gap-1 ${scroll ? 'max-h-80 overflow-y-auto' : 'mt-2'}`}>
+    <ul
+      data-scrollpanel={scroll ? '' : undefined}
+      className={`flex flex-col gap-1 ${scroll ? 'max-h-80 overflow-y-auto' : 'mt-2'}`}
+    >
       {data.map((d, i) => (
         <li key={d.name} className="flex items-center gap-2 text-xs">
           <span
@@ -96,9 +119,16 @@ export default function AdmissionTableReportPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [includeNoData, setIncludeNoData] = useState(true);
-  const tableRef = useRef(null);
+  // ── รายงานรายคณะ ──
+  const [facSort, setFacSort] = useState('count');
+  const [facGroupUni, setFacGroupUni] = useState(false);   // แยกคณะเดียวกันตามมหาวิทยาลัย
+  const [facOnlyConfirmed, setFacOnlyConfirmed] = useState(false);
+  // ── export กราฟ ──
+  const [chartExporting, setChartExporting] = useState(false);
+  const chartAreaRef = useRef(null);
+  const chartTitleRef = useRef(null);
 
-  const filterByDate = (admissions) => {
+  const filterByDate = useCallback((admissions) => {
     if (!dateFrom && !dateTo) return admissions;
     return admissions.filter(a => {
       if (!a.created_at) return false;
@@ -107,7 +137,7 @@ export default function AdmissionTableReportPage() {
       if (dateTo && d > new Date(dateTo + 'T23:59:59')) return false;
       return true;
     });
-  };
+  }, [dateFrom, dateTo]);
 
   // Load academic years
   useEffect(() => {
@@ -219,6 +249,110 @@ export default function AdmissionTableReportPage() {
     window.open(withBase('/admin/report-table/print'), '_blank');
   };
 
+  // ── รายงานรายคณะ: คณะไหนมีใครติดบ้าง ────────────────────────────────────────
+  // นับ "คน" กับ "รายการ" แยกกัน — คนเดียวติดคณะเดียวกันหลายสาขาได้ ถ้านับรวมเป็นคน
+  // ยอดจะพองเกินจริง (คณะที่เปิดหลายสาขาจะดูเหมือนมีคนติดเยอะกว่าที่เป็น)
+  const facultyGroups = useMemo(() => {
+    const map = new Map();
+    for (const s of students) {
+      for (const a of filterByDate(s.admissions || [])) {
+        if (facOnlyConfirmed && !a.confirmed) continue;
+        const faculty = a.faculty_name || 'ไม่ระบุคณะ';
+        const university = a.university_name || 'ไม่ระบุมหาวิทยาลัย';
+        const campus = a.campus || '';
+        const key = facGroupUni ? `${faculty} ${university} ${campus}` : faculty;
+        let g = map.get(key);
+        if (!g) {
+          g = {
+            key, faculty,
+            university: facGroupUni ? university : '',
+            campus: facGroupUni ? campus : '',
+            rows: [], codes: new Set(), uniCount: new Map(), confirmed: 0,
+          };
+          map.set(key, g);
+        }
+        g.rows.push({
+          student_code: s.student_code,
+          name: `${s.title_prefix || ''}${s.first_name || ''} ${s.last_name || ''}`.trim(),
+          class_level: s.class_level,
+          class_room: s.class_room,
+          number_in_room: s.number_in_room,
+          university, campus,
+          program: a.program_name || '',
+          confirmed: !!a.confirmed,
+        });
+        g.codes.add(s.student_code);
+        g.uniCount.set(university, (g.uniCount.get(university) || 0) + 1);
+        if (a.confirmed) g.confirmed++;
+      }
+    }
+
+    // มหาวิทยาลัยตัวแทนของกลุ่ม (ใช้ตอนเรียงตามชื่อมหาวิทยาลัย) — โหมดไม่แยกมหาวิทยาลัย
+    // คณะหนึ่งมีได้หลายแห่ง จึงยึดแห่งที่มีคนติดมากที่สุดในคณะนั้น
+    const mainUni = (g) =>
+      [...g.uniCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'th'))[0]?.[0] || '';
+
+    const byName = (a, b) => a.faculty.localeCompare(b.faculty, 'th');
+    const SORTERS = {
+      count:     (a, b) => b.codes.size - a.codes.size || byName(a, b),
+      confirmed: (a, b) => b.confirmed - a.confirmed || b.codes.size - a.codes.size || byName(a, b),
+      name:      byName,
+      uni:       (a, b) => mainUni(a).localeCompare(mainUni(b), 'th') || byName(a, b),
+    };
+
+    const groups = [...map.values()];
+    groups.forEach(g => { g.mainUni = mainUni(g); });
+    groups.sort(SORTERS[facSort] || SORTERS.count);
+    return groups;
+  }, [students, filterByDate, facGroupUni, facOnlyConfirmed, facSort]);
+
+  // คนคนเดียวติดหลายคณะได้ — ยอด "คน" ของทั้งรายงานจึงต้อง unique ข้ามกลุ่ม ไม่ใช่บวกยอดรายกลุ่ม
+  const facultyStudentCount = new Set(facultyGroups.flatMap(g => [...g.codes])).size;
+  const facultyRowCount = facultyGroups.reduce((n, g) => n + g.rows.length, 0);
+
+  const exportFacultyExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    const summary = facultyGroups.map((g, i) => ({
+      'ลำดับ': i + 1,
+      'คณะ': g.faculty,
+      ...(facGroupUni
+        ? { 'มหาวิทยาลัย': g.university, 'วิทยาเขต': g.campus }
+        : { 'มหาวิทยาลัยที่มีคนติดมากสุด': g.mainUni, 'จำนวนมหาวิทยาลัย': g.uniCount.size }),
+      'จำนวนนักเรียน (คน)': g.codes.size,
+      'จำนวนรายการ': g.rows.length,
+      'ยืนยันสิทธิ์': g.confirmed,
+    }));
+    const wsSum = XLSX.utils.json_to_sheet(summary);
+    wsSum['!cols'] = [{ wch: 7 }, { wch: 34 }, { wch: 30 }, { wch: 16 }, { wch: 18 }, { wch: 13 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, wsSum, 'สรุปรายคณะ');
+
+    // แถวรายชื่อซ้ำชื่อคณะทุกบรรทัด (ไม่ merge) เพื่อให้เอาไปกรอง/ทำ pivot ใน Excel ต่อได้
+    const detail = facultyGroups.flatMap(g =>
+      g.rows.map((r, i) => ({
+        'คณะ': g.faculty,
+        'ลำดับในคณะ': i + 1,
+        'ชั้น': r.class_level,
+        'ห้อง': r.class_room,
+        'เลขที่': r.number_in_room,
+        'รหัสนักเรียน': r.student_code,
+        'ชื่อ-นามสกุล': r.name,
+        'มหาวิทยาลัย': r.university,
+        'วิทยาเขต': r.campus,
+        'สาขา': r.program,
+        'ยืนยันสิทธิ์': r.confirmed ? 'ยืนยัน' : '',
+      }))
+    );
+    const wsDetail = XLSX.utils.json_to_sheet(detail);
+    wsDetail['!cols'] = [
+      { wch: 34 }, { wch: 11 }, { wch: 7 }, { wch: 6 }, { wch: 7 }, { wch: 12 },
+      { wch: 24 }, { wch: 30 }, { wch: 14 }, { wch: 28 }, { wch: 11 },
+    ];
+    XLSX.utils.book_append_sheet(wb, wsDetail, 'รายชื่อรายคณะ');
+
+    XLSX.writeFile(wb, `รายงานรายคณะ_${yearName}.xlsx`);
+  };
+
   const totalStudents = students.length;
   const allAdmissions = students.flatMap(s => filterByDate(s.admissions || []));
   const confirmedAdmissions = allAdmissions.filter(a => a.confirmed);
@@ -259,6 +393,68 @@ export default function AdmissionTableReportPage() {
   const activeData = chartMode === 'confirmed' ? confirmedChartData : allChartData;
   const activeTotal = chartMode === 'confirmed' ? confirmedAdmissions.length : allAdmissions.length;
 
+  const dateRangeLabel = isFiltered
+    ? `เฉพาะที่บันทึก${dateFrom ? ` ตั้งแต่ ${thaiDate(dateFrom)}` : ''}${dateTo ? ` ถึง ${thaiDate(dateTo)}` : ''}`
+    : '';
+  const modeLabel = chartMode === 'confirmed' ? 'เฉพาะยืนยันสิทธิ์' : 'ทั้งหมดที่บันทึก';
+
+  // ── Export กราฟเป็นรูป ──────────────────────────────────────────────────────
+  // เก็บภาพจาก "ชั้นในของกล่องที่เลื่อน" ไม่ใช่ตัวกล่องเอง — ถ้าเก็บจากกล่องที่มี
+  // overflow-y-auto จะได้แค่ส่วนที่มองเห็นอยู่ กราฟที่เลื่อนลงไปหายหมด
+  // ปุ่ม/ตัวสลับโหมดติด data-noexport ไว้ให้ตัดออกจากภาพ แล้วโชว์หัวเรื่องแทนเฉพาะตอนเก็บภาพ
+  const exportChartPng = async () => {
+    const node = chartAreaRef.current;
+    if (!node || chartExporting) return;
+    setChartExporting(true);
+    const title = chartTitleRef.current;
+    if (title) title.style.display = 'block';
+    // คลายกล่องที่เลื่อนดู (ตารางสรุปสาขา) ให้สูงเต็มก่อน ไม่งั้นภาพได้แค่ส่วนที่เห็นอยู่
+    const panels = [...node.querySelectorAll('[data-scrollpanel]')];
+    for (const p of panels) { p.style.maxHeight = 'none'; p.style.overflow = 'visible'; }
+    try {
+      const bg = getComputedStyle(node).backgroundColor;
+      const canvas = await domToCanvas(node, {
+        scale: 2, // ชัดพอเอาไปวางในเอกสาร/สไลด์โดยไม่แตก
+        backgroundColor: bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#ffffff',
+        filter: (el) => !(el.nodeType === 1 && el.hasAttribute('data-noexport')),
+        fetch: { requestInit: { mode: 'cors' } },
+      });
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) throw new Error('แปลงภาพไม่สำเร็จ');
+      saveAs(blob, `กราฟผลการสอบ_${yearName}_${modeLabel}.png`);
+    } catch (err) {
+      console.error('บันทึกกราฟเป็นรูปไม่สำเร็จ', err);
+      alert('บันทึกกราฟเป็นรูปไม่สำเร็จ ลองใหม่อีกครั้ง');
+    } finally {
+      if (title) title.style.display = 'none';
+      for (const p of panels) { p.style.maxHeight = ''; p.style.overflow = ''; }
+      setChartExporting(false);
+    }
+  };
+
+  // ── Export ตัวเลขในกราฟเป็น Excel ──────────────────────────────────────────
+  const exportChartExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const sheets = [
+      { name: 'มหาวิทยาลัย',    head: 'มหาวิทยาลัย',      data: activeData.uni },
+      { name: 'คณะ',           head: 'คณะ',              data: activeData.fac },
+      { name: 'สาขากลุ่มวิชา',  head: 'สาขา/กลุ่มวิชา',   data: activeData.prog },
+    ];
+    for (const s of sheets) {
+      const rows = s.data.map((d, i) => ({
+        'ลำดับ': i + 1,
+        [s.head]: d.name,
+        'จำนวน (รายการ)': d.value,
+        'สัดส่วน (%)': activeTotal > 0 ? Number(((d.value / activeTotal) * 100).toFixed(1)) : 0,
+      }));
+      rows.push({ 'ลำดับ': '', [s.head]: 'รวม', 'จำนวน (รายการ)': activeTotal, 'สัดส่วน (%)': activeTotal > 0 ? 100 : 0 });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      ws['!cols'] = [{ wch: 7 }, { wch: 40 }, { wch: 15 }, { wch: 13 }];
+      XLSX.utils.book_append_sheet(wb, ws, s.name);
+    }
+    XLSX.writeFile(wb, `กราฟผลการสอบ_${yearName}_${modeLabel}.xlsx`);
+  };
+
   return (
     <>
       {/* Print CSS */}
@@ -267,6 +463,10 @@ export default function AdmissionTableReportPage() {
           .no-print { display: none !important; }
           body { font-size: 11px; }
           table { font-size: 10px; }
+          /* กล่องตารางถูกจำกัดความสูงไว้ให้เลื่อนดูบนจอ — ตอนพิมพ์ต้องคลายออก
+             ไม่งั้นได้เฉพาะส่วนที่มองเห็นหน้าเดียว */
+          .table-scroll { max-height: none !important; overflow: visible !important; }
+          tr { break-inside: avoid; }
         }
       `}</style>
 
@@ -390,10 +590,12 @@ export default function AdmissionTableReportPage() {
             aria-label="กราฟวิเคราะห์ผลการสอบ"
           >
             <div
-              className="anim-scale-in max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-base-300 bg-base-100 p-6 shadow-2xl"
+              className="anim-scale-in max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-base-300 bg-base-100 shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
-              <div className="mb-5 flex items-center justify-between gap-3">
+             {/* ชั้นในของกล่องที่เลื่อน = สิ่งที่ถูกเก็บเป็นรูปตอน export (ดู exportChartPng) */}
+             <div ref={chartAreaRef} className="bg-base-100 p-6">
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3" data-noexport>
                 <div className="flex items-center gap-2.5">
                   <span className="gt-chip size-9">
                     <Icon name="chart" size={18} />
@@ -402,17 +604,55 @@ export default function AdmissionTableReportPage() {
                     กราฟวิเคราะห์ผลการสอบ ปีการศึกษา {yearName}
                   </h2>
                 </div>
-                <button
-                  className="btn btn-ghost btn-sm px-2"
-                  onClick={() => setShowChart(false)}
-                  aria-label="ปิดกราฟ"
-                >
-                  <Icon name="x" size={18} />
-                </button>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <button
+                    className="btn btn-outline btn-sm gap-1.5"
+                    onClick={exportChartPng}
+                    disabled={chartExporting}
+                    title="บันทึกกราฟทั้งหน้าเป็นไฟล์รูป .png"
+                  >
+                    {chartExporting ? (
+                      <span className="loading loading-spinner loading-xs" />
+                    ) : (
+                      <Icon name="image" size={15} />
+                    )}
+                    บันทึกรูป
+                  </button>
+                  <button
+                    className="btn btn-outline btn-sm gap-1.5"
+                    onClick={exportChartExcel}
+                    title="ส่งออกตัวเลขในกราฟเป็น Excel"
+                  >
+                    <Icon name="sheet" size={15} />
+                    Excel
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm px-2"
+                    onClick={() => setShowChart(false)}
+                    aria-label="ปิดกราฟ"
+                  >
+                    <Icon name="x" size={18} />
+                  </button>
+                </div>
+              </div>
+
+              {/* หัวเรื่องของภาพที่ export — ซ่อนบนหน้าจอ เพราะแถบด้านบนบอกอยู่แล้ว
+                  แต่ในไฟล์รูปต้องมี ไม่งั้นดูทีหลังไม่รู้ว่าเป็นปีไหน ชุดข้อมูลไหน */}
+              <div
+                ref={chartTitleRef}
+                style={{ display: 'none' }}
+                className="mb-6 border-b border-base-300 pb-4 text-center"
+              >
+                <p className="text-lg font-semibold">
+                  กราฟวิเคราะห์ผลการสอบ ปีการศึกษา {yearName}
+                </p>
+                <p className="mt-1 text-xs text-base-content/60">
+                  {modeLabel} · {activeTotal} รายการ{dateRangeLabel ? ` · ${dateRangeLabel}` : ''}
+                </p>
               </div>
 
               {/* สลับชุดข้อมูล */}
-              <div className="mb-6 flex flex-wrap gap-2">
+              <div className="mb-6 flex flex-wrap gap-2" data-noexport>
                 <button
                   className={`btn btn-sm gap-1.5 ${chartMode === 'all' ? 'btn-primary' : 'btn-outline'}`}
                   onClick={() => setChartMode('all')}
@@ -504,6 +744,7 @@ export default function AdmissionTableReportPage() {
                   </div>
                 )}
               </section>
+             </div>
             </div>
           </div>
         )}
@@ -516,6 +757,171 @@ export default function AdmissionTableReportPage() {
               ))}
             </div>
           </div>
+        )}
+
+        {/* ── รายงานรายคณะ: คณะไหนมีใครติดบ้าง ยืนยันที่ไหน ── */}
+        {!loading && (
+          <section className="mt-6">
+            <div className="no-print mb-3 flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="gt-chip size-8">
+                  <Icon name="faculty" size={16} />
+                </span>
+                <div>
+                  <h2 className="text-sm font-semibold sm:text-base">รายงานรายคณะ</h2>
+                  <p className="mt-0.5 text-xs text-base-content/55">
+                    {facultyGroups.length} คณะ · {facultyStudentCount} คน · {facultyRowCount} รายการ
+                  </p>
+                </div>
+              </div>
+
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <label htmlFor="fac-sort" className="whitespace-nowrap text-xs text-base-content/55">
+                  เรียงตาม
+                </label>
+                <select
+                  id="fac-sort"
+                  className="select select-sm"
+                  value={facSort}
+                  onChange={e => setFacSort(e.target.value)}
+                >
+                  {FACULTY_SORTS.map(s => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
+                  ))}
+                </select>
+
+                <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm checkbox-primary"
+                    checked={facGroupUni}
+                    onChange={e => setFacGroupUni(e.target.checked)}
+                  />
+                  <span className="text-sm">แยกตามมหาวิทยาลัย</span>
+                </label>
+
+                <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm checkbox-success"
+                    checked={facOnlyConfirmed}
+                    onChange={e => setFacOnlyConfirmed(e.target.checked)}
+                  />
+                  <span className="text-sm">เฉพาะที่ยืนยันสิทธิ์</span>
+                </label>
+
+                <button
+                  className="btn btn-outline btn-sm gap-1.5"
+                  onClick={exportFacultyExcel}
+                  disabled={facultyGroups.length === 0}
+                >
+                  <Icon name="sheet" size={15} />
+                  Excel
+                </button>
+              </div>
+            </div>
+
+            <TableWrap sticky className="anim-fade-up">
+              <table className="table table-sm">
+                <thead>
+                  <tr>
+                    <th className="w-10">#</th>
+                    <th>ชั้น/ห้อง</th>
+                    <th>เลขที่</th>
+                    <th>รหัส</th>
+                    <th>ชื่อ-นามสกุล</th>
+                    <th>มหาวิทยาลัย</th>
+                    <th>สาขา</th>
+                    <th>ยืนยันสิทธิ์</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {facultyGroups.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="p-0">
+                        <EmptyState
+                          icon="faculty"
+                          title={
+                            facOnlyConfirmed
+                              ? 'ยังไม่มีใครยืนยันสิทธิ์ตามเงื่อนไขนี้'
+                              : 'ยังไม่มีข้อมูลการสอบติดในช่วงนี้'
+                          }
+                          hint={
+                            isFiltered || facOnlyConfirmed
+                              ? 'ลองล้างช่วงวันที่ หรือเอาตัวกรอง “เฉพาะที่ยืนยันสิทธิ์” ออก'
+                              : 'บันทึกผลสอบของนักเรียนได้ที่หน้า สถานะการบันทึกผลสอบ'
+                          }
+                        />
+                      </td>
+                    </tr>
+                  ) : (
+                    facultyGroups.map(g => (
+                      <Fragment key={g.key}>
+                        <tr>
+                          <th colSpan={8} className="bg-base-200/70">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Icon name="faculty" size={15} className="text-primary" />
+                              <span className="text-sm font-semibold text-base-content">
+                                {g.faculty}
+                              </span>
+                              {facGroupUni && (
+                                <span className="text-xs font-normal text-base-content/60">
+                                  · {g.university}{g.campus ? ` (${g.campus})` : ''}
+                                </span>
+                              )}
+                              <span className="ml-auto flex flex-wrap items-center gap-1.5">
+                                <Tag tone="primary">{g.codes.size} คน</Tag>
+                                {g.rows.length !== g.codes.size && (
+                                  <Tag tone="muted">{g.rows.length} รายการ</Tag>
+                                )}
+                                {!facGroupUni && g.uniCount.size > 1 && (
+                                  <Tag tone="navy" icon="university">{g.uniCount.size} แห่ง</Tag>
+                                )}
+                                <Tag
+                                  tone={g.confirmed > 0 ? 'success' : 'muted'}
+                                  icon={g.confirmed > 0 ? 'checkCircle' : undefined}
+                                >
+                                  ยืนยัน {g.confirmed}
+                                </Tag>
+                              </span>
+                            </div>
+                          </th>
+                        </tr>
+                        {g.rows.map((r, i) => (
+                          <tr
+                            key={`${g.key}|${r.student_code}|${i}`}
+                            className={r.confirmed ? 'bg-success/5' : ''}
+                          >
+                            <td className="text-xs tabular-nums text-base-content/40">{i + 1}</td>
+                            <td className="whitespace-nowrap tabular-nums">
+                              {r.class_level}/{r.class_room}
+                            </td>
+                            <td className="tabular-nums">{r.number_in_room}</td>
+                            <td className="font-mono text-xs tabular-nums">{r.student_code}</td>
+                            <td className="whitespace-nowrap">{r.name}</td>
+                            <td className="text-xs">
+                              {r.university}
+                              {r.campus && (
+                                <span className="block text-base-content/50">วิทยาเขต {r.campus}</span>
+                              )}
+                            </td>
+                            <td className="text-xs text-base-content/70">{r.program || '—'}</td>
+                            <td>
+                              {r.confirmed ? (
+                                <Tag tone="success" icon="checkCircle">ยืนยันแล้ว</Tag>
+                              ) : (
+                                <span className="text-xs text-base-content/35">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </Fragment>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </TableWrap>
+          </section>
         )}
       </div>
     </>

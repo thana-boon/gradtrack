@@ -1,4 +1,9 @@
-# syntax=docker/dockerfile:1
+# ไม่ตั้ง `# syntax=docker/dockerfile:1` โดยตั้งใจ — บรรทัดนั้นสั่งให้ BuildKit ไปโหลด
+# image ตัวแปล Dockerfile จาก Docker Hub ก่อนเริ่ม build ทุกครั้ง เน็ตโรงเรียนสะดุด
+# เมื่อไหร่ deploy ก็ล้มทันทีด้วย TLS handshake timeout ทั้งที่ base image มีในเครื่องแล้ว
+# ไฟล์นี้ใช้แต่ไวยากรณ์ที่ frontend ในตัวของ BuildKit รองรับอยู่แล้ว (multi-stage, ARG,
+# COPY --from) ไม่มี RUN --mount / heredoc / COPY --link จึงไม่ต้องพึ่งตัวนอก
+# ⚠️ ถ้าวันหนึ่งต้องใช้ฟีเจอร์ใหม่ ๆ ค่อยใส่กลับ แล้วต้อง pre-pull docker/dockerfile ไว้ด้วย
 
 # ===== base =====
 FROM node:20-alpine AS base

@@ -175,6 +175,11 @@ CREATE TABLE IF NOT EXISTS report_settings (
   layout_json          TEXT
 );
 
+-- ฟอนต์หลักของการ์ด — เพิ่มทีหลัง เขียนแบบ IF NOT EXISTS ลงไฟล์เดิมได้
+-- เพราะ migration รันซ้ำทุกครั้งที่สตาร์ท (ดูหัวไฟล์ database/migrate.js)
+-- ค่าที่ยอมรับถูกจำกัดด้วย whitelist ฝั่ง server อีกชั้น (routes/reportSettings.js)
+ALTER TABLE report_settings ADD COLUMN IF NOT EXISTS font_family VARCHAR(80) DEFAULT 'Prompt';
+
 INSERT INTO report_settings (id, congrats_text, show_quote)
 VALUES (1, 'ขอแสดงความยินดีกับความสำเร็จของน้องๆ ทุกคน', 1)
 ON CONFLICT (id) DO NOTHING;

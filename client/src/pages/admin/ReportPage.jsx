@@ -10,6 +10,10 @@ import { resolveMediaUrl } from '../../utils/mediaUrl';
 import SearchableSelect from '../../components/SearchableSelect';
 import Icon from '../../components/ui/Icon';
 import { PageHeader } from '../../components/ui';
+import {
+  CARD_FONTS, DEFAULT_CARD_FONT, cardFont, fontStack, nearestWeight,
+  ensureFontLinks, loadCardFonts, fontsInUse, googleFontsHref, CARD_FONT_IDS,
+} from '../../utils/cardFonts';
 
 // ─── แคชรูประดับโมดูล (โลโก้ / พื้นหลัง / รูปนักเรียน) ──────────────────────────
 // modern-screenshot ฝังรูปลงภาพด้วยการ fetch แล้วแปลงเป็น data URL เอง แต่แคชของมันอยู่ใน
@@ -119,6 +123,10 @@ function getUniLayout(count, rows = count) {
 
 // ─── Free-layout: ตำแหน่ง/ขนาดของแต่ละชิ้นบน canvas 1080×1080 (ลากวาง+ปรับขนาดได้เหมือน Word) ─
 // แต่ละชิ้นเก็บ { x, y, w, scale }  (รูปใช้ w แล้วสูง = w×1.5)
+// ชิ้นที่เป็นข้อความเก็บสไตล์เพิ่มได้: { font, weight, color, align }
+// — ทั้งสี่ตัว "ไม่ใส่ = สืบทอด" (ฟอนต์หลัก / สีตัวอักษรกลาง / ค่าเริ่มต้นของชิ้นนั้น)
+//   จึงต้อง "ลบคีย์ทิ้ง" เวลาผู้ใช้สั่งกลับไปใช้ค่ากลาง ห้ามเซ็ตเป็น undefined ค้างไว้
+//   เพราะ mergeLayout ใช้ spread ซึ่ง undefined จะทับค่ากลางหาย
 export const LAYOUT_ELEMENTS = ['logo', 'school', 'congrats', 'photo', 'name'];
 export const LAYOUT_LABELS = {
   logo: 'โลโก้โรงเรียน', school: 'ชื่อโรงเรียน', congrats: 'ข้อความยินดี',
@@ -364,6 +372,20 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
   const confirmBg = hexToRgba(confirmColor, confirmOpacity);
   const confirmBorder = hexToRgba(confirmColor, 80);
 
+  // ── สไตล์ตัวอักษรของแต่ละชิ้น: ค่าที่ตั้งไว้บนชิ้น > ค่ากลางของการ์ด ──
+  const baseFont = settings.font_family || DEFAULT_CARD_FONT;
+  // น้ำหนักผ่าน nearestWeight เสมอ — ฟอนต์ลายมือมีแค่ 400/700 ขอ 500 ไปเบราว์เซอร์จะปลอมตัวหนาให้
+  // ซึ่งออกมาไม่เหมือนกันในแต่ละเครื่อง = การ์ดที่ export ไม่ตรงกับที่เห็นบนจอ
+  const textStyle = (box, { weight = 400, align = 'center' } = {}) => {
+    const font = box.font || baseFont;
+    return {
+      fontFamily: fontStack(font),
+      fontWeight: nearestWeight(font, box.weight ?? weight),
+      color: box.color || textColor,
+      textAlign: box.align || align,
+    };
+  };
+
   const fullName = `${student.title_prefix || ''}${student.first_name || ''} ${student.last_name || ''}`;
   const nameFontSize = fullName.length <= 18 ? 38
     : fullName.length <= 22 ? 32
@@ -384,7 +406,7 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
       height: 1080,
       position: 'relative',
       overflow: 'hidden',
-      fontFamily: "'Prompt', 'Noto Sans Thai', sans-serif",
+      fontFamily: fontStack(settings.font_family),
       background: '#0f0c29',
       color: textColor,
       boxSizing: 'border-box',
@@ -423,7 +445,8 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
       {settings.school_name && (
         <div style={{
           position: 'absolute', left: LO.school.x, top: LO.school.y, width: LO.school.w,
-          fontSize: 30 * LO.school.scale, fontWeight: 700, textAlign: 'center',
+          fontSize: 30 * LO.school.scale,
+          ...textStyle(LO.school, { weight: 700 }),
           opacity: 0.97, lineHeight: 1.35, zIndex: 3,
         }}>
           {settings.school_name}
@@ -434,12 +457,17 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
       {settings.congrats_text && (
         <div style={{
           position: 'absolute', left: LO.congrats.x, top: LO.congrats.y, width: LO.congrats.w,
-          textAlign: 'center', zIndex: 3,
+          ...textStyle(LO.congrats), zIndex: 3,
         }}>
           <div style={{ fontSize: 22 * LO.congrats.scale, opacity: 0.9, lineHeight: 1.55 }}>
             {settings.congrats_text}
           </div>
-          <div style={{ width: '50%', height: 1, background: `${textColor}4d`, margin: '12px auto 0' }} />
+          {/* เส้นคั่นเกาะไปกับการจัดข้อความ ไม่งั้นจัดชิดซ้ายแล้วเส้นยังลอยอยู่กลาง */}
+          <div style={{
+            width: '50%', height: 1, background: `${textColor}4d`,
+            margin: (LO.congrats.align || 'center') === 'left' ? '12px auto 0 0'
+              : (LO.congrats.align === 'right' ? '12px 0 0 auto' : '12px auto 0'),
+          }} />
         </div>
       )}
 
@@ -487,13 +515,19 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
       {/* Name + Quote + กล่องยืนยัน — ลากวาง/ปรับขนาดได้ (info_offset_y = nudge ละเอียดเพิ่ม) */}
       <div style={{
         position: 'absolute', left: LO.name.x, top: LO.name.y + infoOffsetY, width: LO.name.w,
-        textAlign: 'center', zIndex: 3,
-        transform: `scale(${LO.name.scale})`, transformOrigin: 'top center',
+        // ฟอนต์วางที่กล่องนอก คำคม/กล่องยืนยันจะได้ตามไปด้วย ส่วนสี+น้ำหนักใช้เฉพาะบรรทัดชื่อ
+        ...textStyle(LO.name, { weight: 700 }), color: undefined, fontWeight: undefined,
+        zIndex: 3,
+        transform: `scale(${LO.name.scale})`,
+        // จุดยึดของ scale ต้องตามการจัดข้อความ ไม่งั้นจัดชิดซ้ายแล้วย่อ/ขยาย ตัวบล็อกจะไถลออกจากขอบที่ตั้งไว้
+        transformOrigin: `top ${LO.name.align || 'center'}`,
       }}>
         {/* Name */}
         <div style={{
           display: 'inline-block',
-          fontSize: nameFontSize, fontWeight: 700, textAlign: 'center', lineHeight: 1.3, color: textColor,
+          fontSize: nameFontSize, lineHeight: 1.3,
+          fontWeight: nearestWeight(LO.name.font || baseFont, LO.name.weight ?? 700),
+          color: LO.name.color || textColor,
           background: nameBg,
           padding: nameBgOpacity > 0 ? '8px 22px' : 0,
           borderRadius: nameBgOpacity > 0 ? 14 : 0,
@@ -506,8 +540,10 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
         {/* Quote */}
         {!!settings.show_quote && !!student.quote && quoteApproved && (
           <div style={{
-            fontSize: 18, fontStyle: 'italic', textAlign: 'center',
-            opacity: 0.75, lineHeight: 1.6, maxWidth: 360, margin: '14px auto 0',
+            fontSize: 18, fontStyle: 'italic',
+            opacity: 0.75, lineHeight: 1.6, maxWidth: 360,
+            margin: (LO.name.align || 'center') === 'left' ? '14px auto 0 0'
+              : (LO.name.align === 'right' ? '14px 0 0 auto' : '14px auto 0'),
           }}>
             "{student.quote}"
           </div>
@@ -640,10 +676,13 @@ export function StudentCard({ student, settings, yearName, quoteApproved = true 
   );
 }
 
+// เส้นไกด์ตอนไม่มีอะไรดูดติด — ค่าคงที่ระดับโมดูลเพื่อให้ identity เท่าเดิมทุกครั้ง
+const EMPTY_GUIDES = { v: [], h: [] };
+
 // ─── DragResizeBox: กล่องลากวาง+ปรับขนาด 1 ชิ้น (วางทับ preview) ───────────────
 // พิกัดที่รับ/ส่งเป็น canvas px (1080 ฐาน) — คูณ scale เฉพาะตอนวาด/หารตอนคำนวณ delta
 const round2 = (v) => Math.round(v * 100) / 100;
-function DragResizeBox({ x, y, w, h, scale, curScale, label, selected, overridden, resizeMode, onSelect, onChange, onReset }) {
+function DragResizeBox({ x, y, w, h, scale, curScale, label, selected, overridden, resizeMode, snap, onSelect, onChange, onEditStart, onEditEnd, onReset }) {
   const drag = useRef(null);
 
   const onPointerMove = (e) => {
@@ -651,9 +690,14 @@ function DragResizeBox({ x, y, w, h, scale, curScale, label, selected, overridde
     const dx = (e.clientX - drag.current.sx) / scale;
     const dy = (e.clientY - drag.current.sy) / scale;
     if (drag.current.type === 'move') {
-      onChange({ x: Math.round(drag.current.ox + dx), y: Math.round(drag.current.oy + dy) });
+      // ดูดเข้าเส้นไกด์ก่อนปัดเศษ — ปัดก่อนแล้วค่อยดูดจะพลาดเส้นที่อยู่ห่างไม่ถึง 1px
+      const raw = { x: drag.current.ox + dx, y: drag.current.oy + dy };
+      const p = snap ? snap('move', { ...raw, w, h }) : raw;
+      onChange({ x: Math.round(p.x), y: Math.round(p.y) });
     } else {
-      const newW = Math.max(24, Math.round(drag.current.ow + dx));
+      let newW = Math.max(24, drag.current.ow + dx);
+      if (snap) newW = Math.max(24, snap('resize', { x, w: newW }).w);
+      newW = Math.round(newW);
       const patch = { w: newW };
       // text = ขยายกล่อง+ฟอนต์พร้อมกัน (เหมือนลากมุมกล่องข้อความใน Word)
       if (resizeMode === 'text') patch.scale = round2(drag.current.os * (newW / drag.current.ow));
@@ -661,18 +705,21 @@ function DragResizeBox({ x, y, w, h, scale, curScale, label, selected, overridde
     }
   };
   const endDrag = (e) => {
+    if (drag.current) onEditEnd?.();   // ลากจบ = ปิดก้อน undo หนึ่งก้อน (ไม่ใช่ก้อนละ pointermove)
     drag.current = null;
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* noop */ }
   };
   const startMove = (e) => {
     e.stopPropagation();
     onSelect();
+    onEditStart?.();
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { type: 'move', sx: e.clientX, sy: e.clientY, ox: x, oy: y };
   };
   const startResize = (e) => {
     e.stopPropagation();
     onSelect();
+    onEditStart?.();
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { type: 'resize', sx: e.clientX, sy: e.clientY, ow: w, os: curScale };
   };
@@ -743,11 +790,151 @@ function DragResizeBox({ x, y, w, h, scale, curScale, label, selected, overridde
   );
 }
 
+// ─── ElementToolbar: แถบเครื่องมือลอยเหนือชิ้นที่เลือก ────────────────────────
+// วางไว้ติดกับชิ้นเลย ไม่ให้ต้องละสายตาไปหาใน sidebar — ค่าที่ปรับมีผลเฉพาะชิ้นนั้น
+// ทุกช่อง "ค่าว่าง = สืบทอด" (ฟอนต์หลัก / สีตัวอักษรกลาง) ไม่ใช่ค่าคงที่ที่ถูกก๊อปมา
+const TOOLBAR_W = 560; // ความกว้างสูงสุด — ใช้กันแถบล้นขอบขวาของ canvas (จอแคบกว่านี้ปล่อยให้ตัดบรรทัด)
+function ElementToolbar({ elKey, box, isText, baseFont, baseColor, canvasScale, canvasSize, onPatch, onReset, onCenterX }) {
+  const font = box.font || baseFont;
+  const weights = cardFont(font).weights;
+  // ตำแหน่ง: ปกติลอยเหนือกล่อง ถ้าชิดขอบบนจนไม่มีที่ ค่อยสลับไปอยู่ใต้กล่อง
+  // ยกขึ้นด้วย translateY(-100%) ไม่ใช่ลบความสูงคงที่ — แถบขึ้น 2 บรรทัดเมื่อจอแคบ
+  // ถ้าเดาความสูงไว้ตายตัวมันจะทับหัวชิ้นที่กำลังแก้อยู่พอดี
+  const topPx = box.y * canvasScale;
+  const above = topPx > 64;
+  const left = Math.max(0, Math.min(box.x * canvasScale, canvasSize - TOOLBAR_W));
+
+  const patch = (p) => onPatch(p);
+  const alignBtn = (value, icon, title) => (
+    <button
+      key={value}
+      className={`btn btn-xs btn-square ${(box.align || 'center') === value ? 'btn-primary' : 'btn-ghost'}`}
+      onClick={() => patch({ align: value })}
+      title={title}
+      aria-label={title}
+      aria-pressed={(box.align || 'center') === value}
+    >
+      <Icon name={icon} size={13} />
+    </button>
+  );
+
+  return (
+    <div
+      onPointerDown={(e) => e.stopPropagation()}
+      className="flex flex-wrap items-center gap-1 rounded-lg border border-base-300 bg-base-100 px-1.5 py-1 shadow-xl"
+      style={{
+        position: 'absolute',
+        left,
+        top: above ? topPx - 8 : topPx + Math.max(box.h || 0, 24) * canvasScale + 8,
+        transform: above ? 'translateY(-100%)' : undefined,
+        // แถบต้องไม่กว้างเกินตัวการ์ด — จอเล็กยอมให้ตัดบรรทัดดีกว่าล้นออกไปนอกกรอบ
+        maxWidth: Math.min(TOOLBAR_W, canvasSize),
+        zIndex: 40,
+      }}
+    >
+      {isText && (
+        <>
+          {/* ฟอนต์ — ตัว select เองใช้ฟอนต์ที่เลือกอยู่ จะได้เห็นหน้าตาจริงโดยไม่ต้องกดเปิด */}
+          <select
+            className="select select-xs w-32"
+            style={{ fontFamily: fontStack(font) }}
+            value={box.font || ''}
+            onChange={(e) => patch({ font: e.target.value || undefined })}
+            title="ฟอนต์ของชิ้นนี้"
+            aria-label="ฟอนต์ของชิ้นนี้"
+          >
+            <option value="" style={{ fontFamily: fontStack(baseFont) }}>ฟอนต์หลัก ({baseFont})</option>
+            {CARD_FONTS.map(f => (
+              <option key={f.id} value={f.id} style={{ fontFamily: fontStack(f.id) }}>{f.id}</option>
+            ))}
+          </select>
+
+          {/* น้ำหนัก — ลิสต์ตามที่ฟอนต์นั้นมีจริง เปลี่ยนฟอนต์แล้วค่าที่ไม่มีจะถูกดึงเข้าตัวใกล้สุด */}
+          <select
+            className="select select-xs w-16"
+            value={nearestWeight(font, box.weight ?? (elKey === 'congrats' ? 400 : 700))}
+            onChange={(e) => patch({ weight: Number(e.target.value) })}
+            title="ความหนา"
+            aria-label="ความหนาตัวอักษร"
+          >
+            {weights.map(w => <option key={w} value={w}>{w}</option>)}
+          </select>
+
+          <span className="mx-0.5 h-5 w-px bg-base-300" />
+          {alignBtn('left', 'alignLeft', 'ชิดซ้าย')}
+          {alignBtn('center', 'alignCenter', 'กึ่งกลาง')}
+          {alignBtn('right', 'alignRight', 'ชิดขวา')}
+
+          <span className="mx-0.5 h-5 w-px bg-base-300" />
+          <input
+            type="color"
+            className="size-6 cursor-pointer rounded border border-base-300"
+            style={{ padding: 1 }}
+            value={box.color || baseColor}
+            onChange={(e) => patch({ color: e.target.value })}
+            title="สีตัวอักษรของชิ้นนี้"
+            aria-label="สีตัวอักษรของชิ้นนี้"
+          />
+          {box.color && (
+            <button
+              className="btn btn-ghost btn-xs px-1 text-[10px]"
+              onClick={() => patch({ color: undefined })}
+              title="กลับไปใช้สีกลางของการ์ด"
+            >สีกลาง</button>
+          )}
+        </>
+      )}
+
+      <span className="mx-0.5 h-5 w-px bg-base-300" />
+      {/* ขนาด: ข้อความคิดเป็น % (scale) — รูป/โลโก้คิดเป็นความกว้างพิกเซลจริง */}
+      {isText ? (
+        <label className="flex items-center gap-1 text-[10px] text-base-content/60">
+          ขนาด
+          <input
+            type="number"
+            className="input input-xs w-16 tabular-nums"
+            min={20} max={600} step={5}
+            value={Math.round((box.scale || 1) * 100)}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v > 0) patch({ scale: round2(Math.min(6, Math.max(0.2, v / 100))) });
+            }}
+            aria-label="ขนาดตัวอักษร (เปอร์เซ็นต์)"
+          />%
+        </label>
+      ) : (
+        <label className="flex items-center gap-1 text-[10px] text-base-content/60">
+          กว้าง
+          <input
+            type="number"
+            className="input input-xs w-16 tabular-nums"
+            min={24} max={1080} step={2}
+            value={Math.round(box.w)}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v)) patch({ w: Math.min(1080, Math.max(24, Math.round(v))) });
+            }}
+            aria-label="ความกว้าง (พิกเซล)"
+          />px
+        </label>
+      )}
+
+      <button className="btn btn-ghost btn-xs btn-square" onClick={onCenterX} title="จัดกึ่งกลางหน้า (แนวนอน)" aria-label="จัดกึ่งกลางหน้าแนวนอน">
+        <Icon name="centerPage" size={13} />
+      </button>
+      <button className="btn btn-ghost btn-xs btn-square text-error" onClick={onReset} title="คืนค่าชิ้นนี้ทั้งหมด" aria-label="คืนค่าชิ้นนี้ทั้งหมด">
+        <Icon name="refresh" size={13} />
+      </button>
+    </div>
+  );
+}
+
 // ─── ReportPage ───────────────────────────────────────────────────────────────
 export default function ReportPage() {
-  const [settings, setSettings] = useState({ congrats_text: '', show_quote: true, background_image_url: null, school_name: '', school_logo_url: null, text_color: '#ffffff', show_photo_frame: true, photo_scale: 100, photo_overflow: false, photo_offset_y: 0, name_bg_color: '#000000', name_bg_opacity: 0, info_offset_y: 0, confirm_color: '#22c55e', confirm_opacity: 22, layout: {} });
+  const [settings, setSettings] = useState({ congrats_text: '', show_quote: true, background_image_url: null, school_name: '', school_logo_url: null, text_color: '#ffffff', show_photo_frame: true, photo_scale: 100, photo_overflow: false, photo_offset_y: 0, name_bg_color: '#000000', name_bg_opacity: 0, info_offset_y: 0, confirm_color: '#22c55e', confirm_opacity: 22, font_family: DEFAULT_CARD_FONT, layout: {} });
   const [editLayout, setEditLayout] = useState(false);   // เปิด modal จัดวางอิสระ
   const [selectedEl, setSelectedEl] = useState(null);    // ชิ้นที่เลือกอยู่ในโหมดลากวาง
+  const [guides, setGuides] = useState(EMPTY_GUIDES);    // เส้นไกด์ที่กำลังดูดติดอยู่ (canvas px)
   const [modalScale, setModalScale] = useState(0.55);    // สเกล preview ใน modal (คำนวณให้พอดีจอ)
   // ค่าเฉพาะรายคน: { [normCode]: { photo_scale, photo_offset_y, photo_overflow, info_offset_y } }
   const [overrides, setOverrides] = useState({});
@@ -788,7 +975,7 @@ export default function ReportPage() {
       }),
     ]).then(([sRes, yRes, activeRes, ovRes]) => {
       const s = sRes.data || { congrats_text: '', show_quote: true, background_image_url: null };
-      setSettings({ ...s, layout: parseLayoutJson(s.layout_json) });
+      setSettings({ ...s, font_family: s.font_family || DEFAULT_CARD_FONT, layout: parseLayoutJson(s.layout_json) });
       // แปลง layout_json ของแต่ละคน string → object
       const ov = {};
       for (const [code, row] of Object.entries(ovRes || {})) {
@@ -838,6 +1025,7 @@ export default function ReportPage() {
         info_offset_y: settings.info_offset_y,
         confirm_color: settings.confirm_color,
         confirm_opacity: settings.confirm_opacity,
+        font_family: settings.font_family,
         layout_json: JSON.stringify(settings.layout || {}),
       });
       // เซฟค่าเฉพาะรายคน — เก็บผลรายตัวเพื่อรู้ว่ามีอันไหน fail
@@ -1002,21 +1190,13 @@ export default function ReportPage() {
     setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
   };
 
-  // รอฟอนต์การ์ดให้พร้อมจริงก่อนแคปภาพ
-  // document.fonts.ready รอเฉพาะไฟล์ที่ "กำลังโหลดอยู่" — ถ้ายังไม่มีอะไรบนจอใช้ Prompt มันจะ resolve ทันที
-  // แล้วภาพที่ได้จะเป็นฟอนต์ระบบ. อีกอย่าง Google Fonts แยกไฟล์ตาม unicode-range ต้องสั่งด้วยตัวอักษรไทย
-  // ไม่งั้นได้มาแต่ subset ละติน
-  const ensureCardFonts = async () => {
-    try {
-      await Promise.all([
-        document.fonts.load('400 22px Prompt', 'กขค ABC'),
-        document.fonts.load('700 22px Prompt', 'กขค ABC'),
-      ]);
-    } catch (err) {
-      console.warn('โหลดฟอนต์ Prompt ไม่สำเร็จ — ภาพที่ได้จะใช้ฟอนต์สำรอง', err);
-    }
-    await document.fonts.ready;
-  };
+  // รอฟอนต์การ์ดให้พร้อมจริงก่อนแคปภาพ — ตามฟอนต์ที่การ์ดใช้อยู่จริง (ฟอนต์หลัก + ที่ตั้งแยกรายชิ้น)
+  // รายละเอียดว่าทำไม document.fonts.ready เฉย ๆ ไม่พอ อยู่ใน utils/cardFonts.js
+  const ensureCardFonts = () => loadCardFonts(fontsInUse(settings, overrides));
+
+  // แปะ <link> ฟอนต์ทุกตัวในลิสต์ตั้งแต่เข้าหน้านี้ — ตัวเลือกใน dropdown ต้องโชว์หน้าตาฟอนต์จริง
+  // เบราว์เซอร์ยังโหลดไฟล์ .woff2 แบบ lazy อยู่ดี (เฉพาะตัวที่มี glyph ถูกใช้จริงบนจอ)
+  useEffect(() => { ensureFontLinks(CARD_FONT_IDS); }, []);
 
   // โหลดรูปเข้าแคชกลางก่อนแคป — ได้ทั้ง data URL (ป้อนให้ modern-screenshot ตรง ๆ)
   // และสัดส่วนภาพ (ใช้คิดขนาดกล่องโลโก้) โหลดครั้งเดียวต่อ URL ใช้ซ้ำได้ทุกการ์ด
@@ -1199,12 +1379,12 @@ export default function ReportPage() {
 <title>${title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;700&family=Noto+Sans+Thai:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="${googleFontsHref([...fontsInUse(settings, overrides), 'Noto Sans Thai'])}" rel="stylesheet" crossorigin="anonymous">
 <style>
   /* บังคับพิมพ์ background (รูปนักเรียน/โลโก้/ตรา/พื้นหลัง เป็น background-image ทั้งหมด)
      ไม่งั้นเบราว์เซอร์จะไม่พิมพ์ background โดยดีฟอลต์ → เห็นแต่ตัวหนังสือ */
   *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important;}
-  html,body{margin:0;padding:0;background:#1a1a2e;font-family:'Prompt','Noto Sans Thai',sans-serif;}
+  html,body{margin:0;padding:0;background:#1a1a2e;font-family:${fontStack(settings.font_family)};}
   body{display:flex;flex-direction:column;align-items:center;gap:24px;padding:24px 0;box-sizing:border-box;}
   .slot{position:relative;box-shadow:0 10px 40px rgba(0,0,0,.4);overflow:hidden;}
   .card-page{width:1080px;height:1080px;}
@@ -1365,40 +1545,105 @@ export default function ReportPage() {
   };
   const resetPv = (key, def) => setPv(key, editingStudent ? null : def);
 
-  // ── Free-layout: เขียน/รีเซ็ตตำแหน่ง+ขนาดของแต่ละชิ้น ──
-  // patch = { x?, y?, w?, scale? } — merge ทับค่าที่แสดงอยู่ (ไม่ให้กระโดดตอนเริ่ม override)
-  const setLayout = (elKey, patch) => {
-    if (editingStudent) {
-      setOverrides(prev => {
-        const cur = prev[previewCode] || {};
-        const curLayout = cur.layout || {};
-        const base = { ...DEFAULT_LAYOUT[elKey], ...(settings.layout?.[elKey] || {}), ...(curLayout[elKey] || {}) };
-        return { ...prev, [previewCode]: { ...cur, layout: { ...curLayout, [elKey]: { ...base, ...patch } } } };
-      });
-      setDirtyCodes(prev => new Set(prev).add(previewCode));
-    } else {
+  // ── Free-layout: เขียน/รีเซ็ต/ย้อนกลับ ตำแหน่ง+ขนาด+สไตล์ของแต่ละชิ้น ──
+  //
+  // ค่าของชิ้นหนึ่งอยู่ได้ 2 ที่: settings.layout (ค่ากลาง) กับ overrides[code].layout (เฉพาะคน)
+  // ทุกการแก้จึงอ้างถึงกันด้วยคู่ (target, elKey) — undo/redo ก็เก็บคู่นี้ไว้ด้วย
+  // เพื่อให้ย้อนกลับไปลงที่เดิมเสมอ ต่อให้ผู้ใช้สลับโหมด/สลับคนไปแล้ว
+  const layoutTarget = () => (editingStudent ? previewCode : 'central');
+
+  /** ค่า "ดิบ" ที่เก็บอยู่จริงใน target นั้น (undefined = ยังไม่เคยตั้ง → สืบทอดมาทั้งชิ้น) */
+  const rawBox = (target, elKey) =>
+    (target === 'central' ? settings.layout?.[elKey] : overrides[target]?.layout?.[elKey]);
+
+  /** เขียนค่าดิบลง target (undefined = ลบทิ้ง กลับไปใช้ค่าที่สืบทอดมา) */
+  const writeBox = (target, elKey, box) => {
+    if (target === 'central') {
       setSettings(p => {
-        const base = { ...DEFAULT_LAYOUT[elKey], ...(p.layout?.[elKey] || {}) };
-        return { ...p, layout: { ...(p.layout || {}), [elKey]: { ...base, ...patch } } };
-      });
-    }
-  };
-  // รีเซ็ตชิ้นเดียว: โหมดรายคน = ลบ override ชิ้นนั้น (กลับไปใช้ค่ากลาง), โหมดกลาง = กลับ default
-  const resetLayoutEl = (elKey) => {
-    if (editingStudent) {
-      setOverrides(prev => {
-        const cur = prev[previewCode];
-        if (!cur?.layout) return prev;
-        const nl = { ...cur.layout }; delete nl[elKey];
-        return { ...prev, [previewCode]: { ...cur, layout: nl } };
-      });
-      setDirtyCodes(prev => new Set(prev).add(previewCode));
-    } else {
-      setSettings(p => {
-        const nl = { ...(p.layout || {}) }; delete nl[elKey];
+        const nl = { ...(p.layout || {}) };
+        if (box === undefined) delete nl[elKey]; else nl[elKey] = box;
         return { ...p, layout: nl };
       });
+    } else {
+      setOverrides(prev => {
+        const cur = prev[target] || {};
+        const nl = { ...(cur.layout || {}) };
+        if (box === undefined) delete nl[elKey]; else nl[elKey] = box;
+        return { ...prev, [target]: { ...cur, layout: nl } };
+      });
+      setDirtyCodes(prev => new Set(prev).add(target));
     }
+  };
+
+  // patch = { x?, y?, w?, scale?, font?, weight?, color?, align? }
+  // ค่า undefined ใน patch = "ลบคีย์นั้นทิ้ง" (กลับไปสืบทอด) ไม่ใช่ "เซ็ตเป็น undefined"
+  const nextBox = (target, elKey, patch) => {
+    const before = rawBox(target, elKey);
+    // ค่ากลางเติม DEFAULT ให้ครบเสมอ ส่วน override เก็บเฉพาะที่ตั้งจริง — จะได้ตามค่ากลางที่แก้ทีหลังต่อได้
+    const next = target === 'central'
+      ? { ...DEFAULT_LAYOUT[elKey], ...(before || {}) }
+      : { ...(before || {}) };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) delete next[k]; else next[k] = v;
+    }
+    return { before, after: Object.keys(next).length > 0 ? next : undefined };
+  };
+
+  // ── ประวัติการแก้ (Ctrl+Z / Ctrl+Shift+Z) ──
+  // เก็บเป็น "ค่าก่อน/หลังของชิ้นเดียว" ไม่ใช่ snapshot ทั้งหน้า — เล็กและย้อนได้ตรงจุด
+  const HISTORY_MAX = 60;
+  const [hist, setHist] = useState({ undo: [], redo: [] });
+  // ระหว่างลาก 1 ครั้งมี pointermove หลายสิบครั้ง ต้องรวบเป็นก้อน undo เดียว
+  // (ref ไม่ใช่ state เพราะต้องอ่าน/เขียนภายในรอบเดียวกันโดยไม่ trigger render)
+  const dragEdit = useRef(null);
+  const pushHistory = (entry) =>
+    setHist(h => ({ undo: [...h.undo, entry].slice(-HISTORY_MAX), redo: [] }));
+
+  const applyLayout = (elKey, patch) => {
+    const target = layoutTarget();
+    const { before, after } = nextBox(target, elKey, patch);
+    writeBox(target, elKey, after);
+    const d = dragEdit.current;
+    if (d && d.elKey === elKey && d.target === target) { d.after = after; return; }
+    pushHistory({ target, elKey, before, after });
+  };
+
+  const beginDragEdit = (elKey) => {
+    const target = layoutTarget();
+    dragEdit.current = { target, elKey, before: rawBox(target, elKey), after: rawBox(target, elKey) };
+  };
+  const endDragEdit = () => {
+    const d = dragEdit.current;
+    dragEdit.current = null;
+    setGuides(EMPTY_GUIDES);
+    if (!d) return;
+    // ลากแล้วปล่อยที่เดิม (หรือแค่คลิกเลือก) ไม่ต้องกินช่องใน undo
+    if (JSON.stringify(d.after ?? null) === JSON.stringify(d.before ?? null)) return;
+    pushHistory({ target: d.target, elKey: d.elKey, before: d.before, after: d.after });
+  };
+
+  const undoLayout = () => {
+    const e = hist.undo[hist.undo.length - 1];
+    if (!e) return;
+    writeBox(e.target, e.elKey, e.before);
+    setHist(h => ({ undo: h.undo.slice(0, -1), redo: [...h.redo, e] }));
+    setSelectedEl(e.elKey);
+  };
+  const redoLayout = () => {
+    const e = hist.redo[hist.redo.length - 1];
+    if (!e) return;
+    writeBox(e.target, e.elKey, e.after);
+    setHist(h => ({ undo: [...h.undo, e].slice(-HISTORY_MAX), redo: h.redo.slice(0, -1) }));
+    setSelectedEl(e.elKey);
+  };
+
+  // รีเซ็ตชิ้นเดียว: โหมดรายคน = ลบ override ชิ้นนั้น (กลับไปใช้ค่ากลาง), โหมดกลาง = กลับ default
+  const resetLayoutEl = (elKey) => {
+    const target = layoutTarget();
+    const before = rawBox(target, elKey);
+    if (before === undefined) return;
+    writeBox(target, elKey, undefined);
+    pushHistory({ target, elKey, before, after: undefined });
   };
   const isLayoutOverridden = (elKey) => editingStudent && !!activeOverride?.layout?.[elKey];
 
@@ -1435,42 +1680,156 @@ export default function ReportPage() {
     if (key === 'congrats') return 92 * (b.scale || 1);
     return 150 * (b.scale || 1); // name
   };
+  // ── เส้นไกด์ดูดติด (snap) ───────────────────────────────────────────────────
+  // เส้นอ้างอิง = ขอบ/กึ่งกลางของหน้า + ขอบ/กึ่งกลางของชิ้นอื่น + กรอบรายชื่อมหาวิทยาลัย
+  // (UNI_BOX ลากไม่ได้ แต่เป็นก้อนใหญ่ที่สุดบนการ์ด ต้องเล็งกับมันได้ ไม่งั้นจัดหน้าไม่ลงตัว)
+  const snapLines = (activeKey) => {
+    const v = [0, 540, 1080, UNI_BOX.x, UNI_BOX.x + UNI_BOX.w / 2, UNI_BOX.x + UNI_BOX.w];
+    const h = [0, 540, 1080, UNI_BOX.y, UNI_BOX.y + UNI_BOX.h / 2, UNI_BOX.y + UNI_BOX.h];
+    for (const { key } of layoutBoxDefs) {
+      if (key === activeKey) continue;
+      const b = previewSettings.layout[key];
+      const bh = elBoxHeight(key, b);
+      v.push(b.x, b.x + b.w / 2, b.x + b.w);
+      h.push(b.y, b.y + bh / 2, b.y + bh);
+    }
+    return { v, h };
+  };
+
+  // ระยะดูดคิดเป็น "พิกเซลบนจอ" แล้วหารด้วยสเกล — จะได้รู้สึกเท่ากันไม่ว่าพรีวิวจะย่อเท่าไร
+  const SNAP_SCREEN_PX = 7;
+  const nearestLine = (anchors, lines, tol) => {
+    let best = null;
+    for (const a of anchors) {
+      for (const line of lines) {
+        const d = line - a;
+        if (Math.abs(d) <= tol && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, line };
+      }
+    }
+    return best;
+  };
+
+  // เส้นไกด์ถูกคำนวณใหม่ทุก pointermove — ถ้าเซ็ต object ใหม่ทุกครั้งจะ re-render ฟรีตลอดการลาก
+  // (ส่วนใหญ่ไม่มีอะไรดูดติด = ว่างเท่าเดิม) จึงเทียบก่อนแล้วคืน state เดิมถ้าไม่เปลี่ยน
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const setGuidesIfChanged = (next) =>
+    setGuides(cur => (same(cur.v, next.v) && same(cur.h, next.h) ? cur : next));
+
+  /** snap ที่ส่งให้ DragResizeBox — คืนพิกัดที่ดูดแล้ว พร้อมอัปเดตเส้นไกด์ที่โชว์อยู่ */
+  const makeSnap = (elKey, scale) => (type, box) => {
+    const tol = SNAP_SCREEN_PX / scale;
+    const { v, h } = snapLines(elKey);
+    if (type === 'resize') {
+      // ปรับขนาดดูดเฉพาะขอบขวา (จุดจับอยู่มุมขวาล่าง ขอบซ้ายไม่ขยับ)
+      const hit = nearestLine([box.x + box.w], v, tol);
+      setGuidesIfChanged(hit ? { v: [hit.line], h: [] } : EMPTY_GUIDES);
+      return { w: hit ? box.w + hit.d : box.w };
+    }
+    const hv = nearestLine([box.x, box.x + box.w / 2, box.x + box.w], v, tol);
+    const hh = nearestLine([box.y, box.y + box.h / 2, box.y + box.h], h, tol);
+    setGuidesIfChanged({ v: hv ? [hv.line] : [], h: hh ? [hh.line] : [] });
+    return { x: box.x + (hv?.d || 0), y: box.y + (hh?.d || 0) };
+  };
+
   // overlay กล่องลากวาง วางทับ card ที่สเกลใด ๆ (ใช้ทั้งใน modal)
-  const renderDragOverlay = (scale) => (
-    <div onPointerDown={() => setSelectedEl(null)} style={{ position: 'absolute', inset: 0, zIndex: 5 }}>
-      {layoutBoxDefs.map(({ key, mode }) => {
-        const b = previewSettings.layout[key];
-        return (
-          <DragResizeBox
-            key={key}
-            x={b.x} y={b.y} w={b.w} h={elBoxHeight(key, b)}
-            curScale={b.scale || 1}
-            scale={scale}
-            label={LAYOUT_LABELS[key]}
-            resizeMode={mode}
-            selected={selectedEl === key}
-            overridden={isLayoutOverridden(key)}
-            onSelect={() => setSelectedEl(key)}
-            onChange={(patch) => setLayout(key, patch)}
-            onReset={() => resetLayoutEl(key)}
+  // toolbar = true → โชว์แถบเครื่องมือลอยของชิ้นที่เลือก (เฉพาะ modal ที่มีที่พอ)
+  const renderDragOverlay = (scale, { toolbar = false } = {}) => {
+    const selBox = selectedEl ? previewSettings.layout[selectedEl] : null;
+    const selDef = selectedEl ? layoutBoxDefs.find(d => d.key === selectedEl) : null;
+    return (
+      <div onPointerDown={() => setSelectedEl(null)} style={{ position: 'absolute', inset: 0, zIndex: 5 }}>
+        {/* เส้นไกด์ — pointerEvents:none เด็ดขาด ไม่งั้นเส้นที่โผล่ใต้เมาส์จะไปขวางการลากเอง */}
+        {guides.v.map(x => (
+          <div key={`v${x}`} style={{ position: 'absolute', left: x * scale, top: 0, bottom: 0, width: 1, background: '#ec4899', pointerEvents: 'none', zIndex: 30 }} />
+        ))}
+        {guides.h.map(y => (
+          <div key={`h${y}`} style={{ position: 'absolute', top: y * scale, left: 0, right: 0, height: 1, background: '#ec4899', pointerEvents: 'none', zIndex: 30 }} />
+        ))}
+
+        {layoutBoxDefs.map(({ key, mode }) => {
+          const b = previewSettings.layout[key];
+          return (
+            <DragResizeBox
+              key={key}
+              x={b.x} y={b.y} w={b.w} h={elBoxHeight(key, b)}
+              curScale={b.scale || 1}
+              scale={scale}
+              label={LAYOUT_LABELS[key]}
+              resizeMode={mode}
+              snap={makeSnap(key, scale)}
+              selected={selectedEl === key}
+              overridden={isLayoutOverridden(key)}
+              onSelect={() => setSelectedEl(key)}
+              onChange={(patch) => applyLayout(key, patch)}
+              onEditStart={() => beginDragEdit(key)}
+              onEditEnd={endDragEdit}
+              onReset={() => resetLayoutEl(key)}
+            />
+          );
+        })}
+
+        {toolbar && selBox && selDef && (
+          <ElementToolbar
+            elKey={selectedEl}
+            box={{ ...selBox, h: elBoxHeight(selectedEl, selBox) }}
+            isText={selDef.mode === 'text'}
+            baseFont={settings.font_family || DEFAULT_CARD_FONT}
+            baseColor={settings.text_color || '#ffffff'}
+            canvasScale={scale}
+            canvasSize={1080 * scale}
+            onPatch={(patch) => applyLayout(selectedEl, patch)}
+            onReset={() => resetLayoutEl(selectedEl)}
+            onCenterX={() => applyLayout(selectedEl, { x: Math.round((1080 - selBox.w) / 2) })}
           />
-        );
-      })}
-    </div>
-  );
+        )}
+      </div>
+    );
+  };
 
   // คำนวณสเกล modal ให้พอดีจอเมื่อเปิด (ตามความกว้าง/สูงหน้าต่าง)
   useEffect(() => {
-    if (!editLayout) return;
+    if (!editLayout) return undefined;
     const calc = () => {
       const s = Math.min((window.innerWidth - 140) / 1080, (window.innerHeight - 260) / 1080);
       setModalScale(Math.max(0.32, Math.min(0.74, s)));
     };
-    const onKey = (e) => { if (e.key === 'Escape') { setEditLayout(false); setSelectedEl(null); } };
     calc();
     window.addEventListener('resize', calc);
-    window.addEventListener('keydown', onKey);
-    return () => { window.removeEventListener('resize', calc); window.removeEventListener('keydown', onKey); };
+    return () => window.removeEventListener('resize', calc);
+  }, [editLayout]);
+
+  // ── คีย์ลัดในโหมดจัดวาง ──────────────────────────────────────────────────────
+  // handler เปลี่ยนทุกรอบ render (อ้าง selectedEl / hist / layout ล่าสุด) แต่ไม่อยากถอด-ใส่
+  // listener ทุกรอบ จึงเก็บตัวล่าสุดไว้ใน ref แล้วผูก listener ครั้งเดียวตอนเปิดโหมด
+  const onLayoutKeyRef = useRef(null);
+  useEffect(() => {
+    onLayoutKeyRef.current = (e) => {
+      const t = e.target;
+      const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redoLayout(); else undoLayout(); return; }
+      if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redoLayout(); return; }
+      if (typing) return;   // กำลังพิมพ์ในช่องของแถบเครื่องมือ — ลูกศร/Esc ต้องเป็นของช่องนั้น
+      if (e.key === 'Escape') {
+        // Esc ครั้งแรกยกเลิกการเลือก ครั้งที่สองค่อยปิดโหมด — กันปิดหลุดตอนกดเผลอ
+        if (selectedEl) setSelectedEl(null); else setEditLayout(false);
+        return;
+      }
+      // ชิ้นที่ถูกซ่อนไปแล้ว (เช่นลบโลโก้โรงเรียนทิ้งตอนที่ยังเลือกค้างอยู่) ต้องขยับไม่ได้
+      if (!selectedEl || !layoutBoxDefs.some(d => d.key === selectedEl)) return;
+      const step = e.shiftKey ? 10 : 1;
+      const delta = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+      if (!delta) return;
+      e.preventDefault();
+      const b = previewSettings.layout[selectedEl];
+      applyLayout(selectedEl, { x: Math.round(b.x + delta[0]), y: Math.round(b.y + delta[1]) });
+    };
+  });
+  useEffect(() => {
+    if (!editLayout) return undefined;
+    const h = (e) => onLayoutKeyRef.current?.(e);
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
   }, [editLayout]);
 
   return (
@@ -1584,14 +1943,35 @@ export default function ReportPage() {
                   <StudentCard student={previewStudent} settings={previewSettings} yearName={yearName} quoteApproved={approvedQuotes.has(previewStudent.student_code)} />
                 </div>
               </div>
-              {renderDragOverlay(modalScale)}
+              {renderDragOverlay(modalScale, { toolbar: true })}
             </div>
           </div>
 
           {/* Footer */}
           <div className="flex flex-wrap items-center gap-2 border-t border-base-300 bg-base-100 px-4 py-2.5">
+            <div className="join shrink-0">
+              <button
+                className="btn btn-outline btn-sm join-item gap-1"
+                onClick={undoLayout}
+                disabled={hist.undo.length === 0}
+                title="ย้อนกลับ (Ctrl+Z)"
+                aria-label="ย้อนกลับ"
+              >
+                <Icon name="undo" size={14} />
+                ย้อนกลับ
+              </button>
+              <button
+                className="btn btn-outline btn-sm join-item btn-square"
+                onClick={redoLayout}
+                disabled={hist.redo.length === 0}
+                title="ทำซ้ำ (Ctrl+Shift+Z)"
+                aria-label="ทำซ้ำ"
+              >
+                <Icon name="redo" size={14} />
+              </button>
+            </div>
             <span className="min-w-0 text-xs text-base-content/60">
-              ลากกลาง = ย้าย • ลากมุมขวาล่าง = ปรับขนาด • คลิกที่ว่าง = ยกเลิกเลือก • ปุ่มรีเซ็ตบนกล่อง = คืนค่าชิ้นนั้น
+              ลากกลาง = ย้าย • ลากมุมขวาล่าง = ปรับขนาด • ลูกศร = ขยับทีละ 1px (Shift = 10px) • Ctrl+Z = ย้อนกลับ
             </span>
             <div className="ml-auto flex shrink-0 items-center gap-2">
               {/* ขอบเขตของค่าที่กำลังแก้ — อยู่ติดปุ่มบันทึก จะได้เห็นว่ากำลังบันทึกให้ใคร */}
@@ -1910,6 +2290,33 @@ export default function ReportPage() {
                 <Icon name="image" size={13} />
                 รูปแบบ & ดีไซน์
               </p>
+
+              {/* Font — ค่ากลางของทั้งการ์ด (ชิ้นไหนอยากใช้ฟอนต์อื่นตั้งทับได้ในโหมดจัดวางอิสระ) */}
+              <div className="form-control gap-1.5 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="rp-font" className="label-text text-xs">ฟอนต์หลักของการ์ด</label>
+                  <button
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => setSettings(p => ({ ...p, font_family: DEFAULT_CARD_FONT }))}
+                  >รีเซ็ต</button>
+                </div>
+                <select
+                  id="rp-font"
+                  className="select select-sm w-full"
+                  style={{ fontFamily: fontStack(settings.font_family) }}
+                  value={settings.font_family || DEFAULT_CARD_FONT}
+                  onChange={e => setSettings(p => ({ ...p, font_family: e.target.value }))}
+                >
+                  {CARD_FONTS.map(f => (
+                    <option key={f.id} value={f.id} style={{ fontFamily: fontStack(f.id) }}>
+                      {f.id} — {f.note}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] leading-relaxed text-base-content/50">
+                  ตัวอย่าง: <span style={{ fontFamily: fontStack(settings.font_family) }}>ขอแสดงความยินดี ABC 123</span>
+                </p>
+              </div>
 
               {/* Text color */}
               <div className="flex items-center justify-between gap-2">

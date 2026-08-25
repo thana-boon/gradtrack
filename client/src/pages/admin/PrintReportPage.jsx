@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { StudentCard, mergeStudentSettings, normCode, noteAspect } from './ReportPage';
 import { resolveMediaUrl } from '../../utils/mediaUrl';
+import { fontStack, loadCardFonts, fontsInUse } from '../../utils/cardFonts';
 
 // โหลดรูปทั้งหมดล่วงหน้าแบบจำกัดจำนวนที่โหลดพร้อมกัน (กัน server ค้างจากการยิงพร้อมกันทีเดียว)
 // รูปจะถูก cache ไว้ พอ <img> จริง render จะดึงจาก cache ทันที → print ออกมาตรงกับตัวอย่าง
@@ -87,7 +88,9 @@ export default function PrintReportPage() {
       await preloadAll(allImageUrls, 6, (done, total) => {
         if (!cancelled) setProgress({ done, total });
       });
-      try { await document.fonts.ready; } catch { /* ไม่รองรับก็ข้าม */ }
+      // ต้องสั่งโหลดฟอนต์ที่การ์ดใช้จริงก่อน — document.fonts.ready เฉย ๆ จะ resolve ทันที
+      // ถ้ายังไม่มีข้อความไหนบนจอใช้ฟอนต์นั้น แล้ว print ออกมาได้ฟอนต์ระบบ (ดู utils/cardFonts.js)
+      try { await loadCardFonts(fontsInUse(data.settings, data.overrides)); } catch { /* ไม่รองรับก็ข้าม */ }
       if (!cancelled) setPhase('ready');
     })();
 
@@ -134,10 +137,10 @@ export default function PrintReportPage() {
     <>
       {/* Print CSS */}
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@400;600;700&display=swap');
-
+        /* ฟอนต์ของการ์ดถูกแปะเป็น <link crossorigin> โดย loadCardFonts ไปแล้ว
+           ที่นี่กำหนดแค่ฟอนต์ของตัวหน้า (แถบแจ้งเตือน) ซึ่งไม่ได้ติดไปกับ PDF */
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: white; font-family: 'Prompt', sans-serif; }
+        body { background: white; font-family: ${fontStack(settings.font_family)}; }
 
         .print-notice {
           text-align: center;

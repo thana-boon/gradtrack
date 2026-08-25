@@ -17,6 +17,22 @@ const normCode = (c) => {
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
+// ─── ฟอนต์ที่อนุญาต ───────────────────────────────────────────────────────────
+// ต้องตรงกับ client/src/utils/cardFonts.js — แก้ที่นั่นแล้วแก้ที่นี่ด้วย
+//
+// เป็น whitelist ไม่ใช่แค่ validation: ชื่อฟอนต์ถูกเอาไปต่อเป็น URL ของ Google Fonts
+// และแปะลงใน <style> ของแท็บพิมพ์ฝั่ง client ค่าที่หลุด whitelist มาจะกลายเป็น CSS injection
+const CARD_FONTS = [
+  'Prompt', 'Kanit', 'Sarabun', 'IBM Plex Sans Thai', 'Noto Sans Thai', 'Mitr',
+  'Bai Jamjuree', 'Chakra Petch', 'K2D', 'Athiti', 'Niramit', 'Pridi', 'Trirong',
+  'Charm', 'Charmonman', 'Srisakdi',
+];
+const DEFAULT_FONT = 'Prompt';
+const safeFont = (v) => (CARD_FONTS.includes(v) ? v : DEFAULT_FONT);
+
+const HEX_COLOR = /^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$/;
+const TEXT_ALIGNS = ['left', 'center', 'right'];
+
 // null/'' = ล้างค่า (กลับไปใช้ค่ากลาง), ตัวเลข = override
 const nullableInt = (v, min, max) => {
   if (v === null || v === undefined || v === '') return null;
@@ -27,6 +43,7 @@ const nullableBool = (v) => (v === null || v === undefined || v === '' ? null : 
 
 // layout_json: รับได้ทั้ง string หรือ object → คืน JSON string ที่สะอาด หรือ null ถ้าว่าง/พัง
 // กันค่าเพี้ยน: เก็บเฉพาะ x,y,w,h,scale ที่เป็นตัวเลขจำกัดช่วง canvas 1080
+// และสไตล์ตัวอักษรรายชิ้น font/weight/color/align — คีย์ที่ไม่รู้จักถูกทิ้งทั้งหมด
 const sanitizeLayoutJson = (v) => {
   if (v === null || v === undefined || v === '') return null;
   let obj = v;
@@ -44,6 +61,12 @@ const sanitizeLayoutJson = (v) => {
     if (box.w !== undefined)     b.w = num(box.w, 8, 2000);
     if (box.h !== undefined)     b.h = num(box.h, 8, 2000);
     if (box.scale !== undefined) b.scale = num(box.scale, 0.2, 6);
+    // สไตล์ตัวอักษรรายชิ้น — ค่าที่ไม่ผ่านจะถูก "ทิ้ง" ไม่ใช่แทนด้วยค่า default
+    // เพราะ "ไม่มีคีย์" แปลว่าสืบทอดจากค่ากลาง ซึ่งเป็นพฤติกรรมที่ถูกต้องกว่าการยัดค่าตายตัวลงไป
+    if (CARD_FONTS.includes(box.font)) b.font = box.font;
+    if (box.weight !== undefined) b.weight = num(box.weight, 100, 900);
+    if (typeof box.color === 'string' && HEX_COLOR.test(box.color)) b.color = box.color;
+    if (TEXT_ALIGNS.includes(box.align)) b.align = box.align;
     // ตัด undefined ออก
     for (const k of Object.keys(b)) if (b[k] === undefined) delete b[k];
     if (Object.keys(b).length > 0) out[key] = b;
@@ -82,7 +105,7 @@ router.get('/', verifyToken, staffRead, async (req, res) => {
 
 // ─── PUT /api/report-settings ─────────────────────────────────────────────────
 router.put('/', verifyToken, adminOnly, async (req, res) => {
-  const { congrats_text, show_quote, school_name, text_color, show_photo_frame, photo_scale, photo_overflow, photo_offset_y, name_bg_color, name_bg_opacity, info_offset_y, confirm_color, confirm_opacity, layout_json } = req.body;
+  const { congrats_text, show_quote, school_name, text_color, show_photo_frame, photo_scale, photo_overflow, photo_offset_y, name_bg_color, name_bg_opacity, info_offset_y, confirm_color, confirm_opacity, font_family, layout_json } = req.body;
   // จำกัดช่วงค่ากันเพี้ยน
   const scale     = Math.min(300, Math.max(50, Number(photo_scale) || 100));
   const offsetY   = Math.min(300, Math.max(-300, Number(photo_offset_y) || 0));
@@ -91,10 +114,11 @@ router.put('/', verifyToken, adminOnly, async (req, res) => {
   const _co       = Number(confirm_opacity);
   const confirmOp = Math.min(100, Math.max(0, Number.isFinite(_co) ? _co : 22));
   const layout    = sanitizeLayoutJson(layout_json);
+  const font      = safeFont(font_family);
   try {
     await db.query(
-      'UPDATE report_settings SET congrats_text = ?, show_quote = ?, school_name = ?, text_color = ?, show_photo_frame = ?, photo_scale = ?, photo_overflow = ?, photo_offset_y = ?, name_bg_color = ?, name_bg_opacity = ?, info_offset_y = ?, confirm_color = ?, confirm_opacity = ?, layout_json = ? WHERE id = 1',
-      [congrats_text ?? '', show_quote ? 1 : 0, school_name ?? '', text_color ?? '#ffffff', show_photo_frame ? 1 : 0, scale, photo_overflow ? 1 : 0, offsetY, name_bg_color ?? '#000000', nameOp, infoY, confirm_color ?? '#22c55e', confirmOp, layout]
+      'UPDATE report_settings SET congrats_text = ?, show_quote = ?, school_name = ?, text_color = ?, show_photo_frame = ?, photo_scale = ?, photo_overflow = ?, photo_offset_y = ?, name_bg_color = ?, name_bg_opacity = ?, info_offset_y = ?, confirm_color = ?, confirm_opacity = ?, font_family = ?, layout_json = ? WHERE id = 1',
+      [congrats_text ?? '', show_quote ? 1 : 0, school_name ?? '', text_color ?? '#ffffff', show_photo_frame ? 1 : 0, scale, photo_overflow ? 1 : 0, offsetY, name_bg_color ?? '#000000', nameOp, infoY, confirm_color ?? '#22c55e', confirmOp, font, layout]
     );
     res.json({ ok: true });
   } catch (err) {

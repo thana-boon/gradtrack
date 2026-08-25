@@ -6,7 +6,16 @@
 # ⚠️ ถ้าวันหนึ่งต้องใช้ฟีเจอร์ใหม่ ๆ ค่อยใส่กลับ แล้วต้อง pre-pull docker/dockerfile ไว้ด้วย
 
 # ===== base =====
-FROM node:20-alpine AS base
+# ตรึงด้วย digest ไม่ใช่แค่ tag — tag ทำให้ BuildKit ต้องถาม registry ว่า "20-alpine
+# ตอนนี้ชี้ไปที่ image ไหน" ทุกครั้งที่ metadata cache หมดอายุ เน็ตโรงเรียนสะดุดตอนนั้น
+# พอดี deploy ก็ล้มด้วย TLS handshake timeout ทั้งที่ image อยู่ในเครื่องครบแล้ว
+# ใส่ digest แล้ว BuildKit ข้ามขั้นถาม registry ไปเลย หยิบจาก content store ตรง ๆ
+#
+# อัปเดต digest เมื่ออยากได้ security update ของ base image:
+#   docker pull node:20-alpine
+#   docker image inspect node:20-alpine --format '{{index .RepoDigests 0}}'
+# แล้วเอาค่าที่ได้มาแทนบรรทัดล่างนี้ (ต้องทำตอนเน็ตนิ่ง ๆ)
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS base
 WORKDIR /app
 ENV TZ=Asia/Bangkok
 

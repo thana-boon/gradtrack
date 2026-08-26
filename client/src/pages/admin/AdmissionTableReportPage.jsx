@@ -39,13 +39,22 @@ const thaiDate = (iso) => {
   return `${d} ${THAI_MONTHS[m - 1] || ''} ${y + 543}`;
 };
 
-// ── รายงานรายคณะ: ตัวเลือกการเรียง ──────────────────────────────────────────
-// ผู้ใช้เลือกได้ว่าจะให้คณะไหนขึ้นก่อน — คนดูรายงานคนละคนสนใจคนละมุม
-// (หัวหน้าระดับดูว่าคณะไหนคนติดเยอะ, ฝ่ายแนะแนวไล่หาคณะตามชื่อ)
-const FACULTY_SORTS = [
+// ── รายงานแยกกลุ่ม: จะจัดกลุ่มด้วยอะไร ──────────────────────────────────────
+// คณะมี 60+ กลุ่มและเกินครึ่งมีคนติดอยู่คนเดียว จัดด้วยสาขา/กลุ่มวิชาจะเหลือไม่กี่กลุ่ม
+// เห็นภาพรวมว่ารุ่นนี้ไปทางไหนกันได้กว้างกว่าไล่ดูทีละคณะ
+// sheet = ชื่อที่เอาไปตั้งเป็นชื่อชีต/ชื่อไฟล์ได้ (Excel ห้ามมี / ในชื่อชีต)
+const GROUP_DIMS = [
+  { key: 'faculty', label: 'คณะ',            sheet: 'คณะ',           of: a => a.faculty_name, empty: 'ไม่ระบุคณะ' },
+  { key: 'field',   label: 'สาขา/กลุ่มวิชา', sheet: 'สาขากลุ่มวิชา', of: a => a.group_field,  empty: 'ไม่ระบุสาขา/กลุ่มวิชา' },
+];
+const dimOf = (key) => GROUP_DIMS.find(d => d.key === key) || GROUP_DIMS[0];
+
+// ตัวเลือกการเรียงกลุ่ม — ผู้ใช้เลือกได้ว่าจะให้กลุ่มไหนขึ้นก่อน คนดูรายงานคนละคนสนใจคนละมุม
+// (หัวหน้าระดับดูว่ากลุ่มไหนคนติดเยอะ, ฝ่ายแนะแนวไล่หาตามชื่อ)
+const groupSorts = (dimLabel) => [
   { key: 'count',     label: 'จำนวนนักเรียนที่ติด (มาก → น้อย)' },
   { key: 'confirmed', label: 'จำนวนที่ยืนยันสิทธิ์ (มาก → น้อย)' },
-  { key: 'name',      label: 'ชื่อคณะ (ก → ฮ)' },
+  { key: 'name',      label: `ชื่อ${dimLabel} (ก → ฮ)` },
   { key: 'uni',       label: 'ชื่อมหาวิทยาลัย (ก → ฮ)' },
   { key: 'custom',    label: 'กำหนดลำดับเอง' },
 ];
@@ -70,7 +79,8 @@ const PDF_COLUMNS = [
 const ALL_PDF_COLUMNS = { class: true, room: true, seat: true, code: true };
 
 const LS_PDF_COLS = 'gradtrack-report-pdf-columns';
-const LS_FAC_ORDER = 'gradtrack-report-faculty-order';
+const LS_FAC_ORDER = 'gradtrack-report-faculty-order'; // { faculty: [...], field: [...] } — ของเดิมเป็น array ของชื่อคณะล้วน
+const LS_FAC_DIM = 'gradtrack-report-group-dim';
 const LS_CHART_VIEW = 'gradtrack-report-chart-view'; // { type: 'pie'|'bar', topN: number }
 
 const loadJSON = (key, fallback) => {
@@ -240,7 +250,7 @@ function ChartBars({ data, total, unit, topN }) {
   );
 }
 
-// เมนูติ๊กเลือกคอลัมน์ที่จะให้ติดไปในไฟล์ PDF (ใช้ร่วมกันทั้งรายงานตารางและรายงานรายคณะ)
+// เมนูติ๊กเลือกคอลัมน์ที่จะให้ติดไปในไฟล์ PDF (ใช้ร่วมกันทั้งรายงานตารางและรายงานแยกกลุ่ม)
 function PdfColumnMenu({ cols, onToggle }) {
   const ref = useRef(null);
 
@@ -284,8 +294,8 @@ function PdfColumnMenu({ cols, onToggle }) {
   );
 }
 
-// จัดลำดับคณะเอง — ลากสลับได้ หรือกดลูกศรทีละขั้นสำหรับคนที่ลากไม่ถนัด/ใช้คีย์บอร์ด
-function FacultyOrderPanel({ names, onReorder, onReset }) {
+// จัดลำดับกลุ่มเอง — ลากสลับได้ หรือกดลูกศรทีละขั้นสำหรับคนที่ลากไม่ถนัด/ใช้คีย์บอร์ด
+function GroupOrderPanel({ names, label, onReorder, onReset }) {
   const [dragIndex, setDragIndex] = useState(null);
 
   const move = (from, to) => {
@@ -301,7 +311,7 @@ function FacultyOrderPanel({ names, onReorder, onReset }) {
     <div className="no-print card mb-3 border border-base-300 bg-base-100 p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <p className="text-xs text-base-content/60">
-          ลากสลับ หรือกดลูกศรเพื่อจัดลำดับคณะ — ลำดับนี้ถูกจำไว้ใช้ครั้งต่อไปด้วย
+          ลากสลับ หรือกดลูกศรเพื่อจัดลำดับ{label} — ลำดับนี้ถูกจำไว้ใช้ครั้งต่อไปด้วย
         </p>
         <button className="btn btn-ghost btn-xs ml-auto gap-1" onClick={onReset}>
           <Icon name="undo" size={12} />
@@ -367,12 +377,18 @@ export default function AdmissionTableReportPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [includeNoData, setIncludeNoData] = useState(true);
-  // ── รายงานรายคณะ ──
+  // ── รายงานแยกกลุ่ม (คณะ / สาขา-กลุ่มวิชา) ──
+  const [facDim, setFacDim] = useState(() => (loadJSON(LS_FAC_DIM, 'faculty') === 'field' ? 'field' : 'faculty'));
   const [facSort, setFacSort] = useState('count');
-  const [facGroupUni, setFacGroupUni] = useState(false);   // แยกคณะเดียวกันตามมหาวิทยาลัย
+  const [facGroupUni, setFacGroupUni] = useState(false);   // แยกกลุ่มเดียวกันตามมหาวิทยาลัย
   const [facOnlyConfirmed, setFacOnlyConfirmed] = useState(false);
-  // ลำดับคณะที่ผู้ใช้จัดเอง (เก็บเป็นชื่อคณะ ไม่ใช่ key ของกลุ่ม — ลำดับจะได้ไม่หายเวลาสลับ "แยกตามมหาวิทยาลัย")
-  const [facOrder, setFacOrder] = useState(() => loadJSON(LS_FAC_ORDER, []));
+  // ลำดับที่ผู้ใช้จัดเอง แยกเก็บตามมุมที่จัดกลุ่ม — สลับไปมาแล้วลำดับของอีกมุมต้องไม่หาย
+  // (เก็บเป็นชื่อกลุ่ม ไม่ใช่ key ของกลุ่ม เพื่อให้ลำดับไม่หายเวลาสลับ "แยกตามมหาวิทยาลัย")
+  const [facOrders, setFacOrders] = useState(() => {
+    const saved = loadJSON(LS_FAC_ORDER, {});
+    return Array.isArray(saved) ? { faculty: saved } : (saved || {});   // ของเดิมเก็บเป็น array ของชื่อคณะล้วน
+  });
+  const facOrder = useMemo(() => facOrders[facDim] || [], [facOrders, facDim]);
   // ── export ──
   const [pdfCols, setPdfCols] = useState(() => ({ ...ALL_PDF_COLUMNS, ...loadJSON(LS_PDF_COLS, {}) }));
   const [chartPick, setChartPick] = useState({ uni: true, fac: true, prog: true });
@@ -397,11 +413,27 @@ export default function AdmissionTableReportPage() {
     });
   };
 
+  const changeFacDim = (key) => {
+    setFacDim(key);
+    saveJSON(LS_FAC_DIM, key);
+  };
+
   const applyFacOrder = (names) => {
     // ชื่อที่เคยจัดไว้แต่ปีนี้ไม่มีข้อมูล เก็บต่อท้ายไว้ ไม่ให้ลำดับที่ตั้งไว้หายไปเวลาสลับปีการศึกษา
     const next = [...names, ...facOrder.filter(n => !names.includes(n))];
-    setFacOrder(next);
-    saveJSON(LS_FAC_ORDER, next);
+    setFacOrders(prev => {
+      const all = { ...prev, [facDim]: next };
+      saveJSON(LS_FAC_ORDER, all);
+      return all;
+    });
+  };
+
+  const resetFacOrder = () => {
+    setFacOrders(prev => {
+      const all = { ...prev, [facDim]: [] };
+      saveJSON(LS_FAC_ORDER, all);
+      return all;
+    });
   };
 
   const filterByDate = useCallback((admissions) => {
@@ -528,22 +560,24 @@ export default function AdmissionTableReportPage() {
     window.open(withBase('/admin/report-table/print'), '_blank');
   };
 
-  // ── รายงานรายคณะ: คณะไหนมีใครติดบ้าง ────────────────────────────────────────
-  // นับ "คน" กับ "รายการ" แยกกัน — คนเดียวติดคณะเดียวกันหลายสาขาได้ ถ้านับรวมเป็นคน
-  // ยอดจะพองเกินจริง (คณะที่เปิดหลายสาขาจะดูเหมือนมีคนติดเยอะกว่าที่เป็น)
-  const facultyGroups = useMemo(() => {
+  // ── รายงานแยกกลุ่ม: กลุ่มไหนมีใครติดบ้าง ────────────────────────────────────
+  // จัดกลุ่มด้วยคณะ หรือด้วยสาขา/กลุ่มวิชาก็ได้ — ตรรกะเดียวกัน ต่างแค่หยิบค่าไหนมาเป็นชื่อกลุ่ม
+  // นับ "คน" กับ "รายการ" แยกกัน — คนเดียวติดกลุ่มเดียวกันหลายที่ได้ ถ้านับรวมเป็นคน
+  // ยอดจะพองเกินจริง (กลุ่มที่มีหลายสาขาจะดูเหมือนมีคนติดเยอะกว่าที่เป็น)
+  const reportGroups = useMemo(() => {
+    const dim = dimOf(facDim);
     const map = new Map();
     for (const s of students) {
       for (const a of filterByDate(s.admissions || [])) {
         if (facOnlyConfirmed && !a.confirmed) continue;
-        const faculty = a.faculty_name || 'ไม่ระบุคณะ';
+        const title = dim.of(a) || dim.empty;
         const university = a.university_name || 'ไม่ระบุมหาวิทยาลัย';
         const campus = a.campus || '';
-        const key = facGroupUni ? `${faculty} ${university} ${campus}` : faculty;
+        const key = facGroupUni ? `${title} ${university} ${campus}` : title;
         let g = map.get(key);
         if (!g) {
           g = {
-            key, faculty,
+            key, title,
             university: facGroupUni ? university : '',
             campus: facGroupUni ? campus : '',
             rows: [], codes: new Set(), uniCount: new Map(), confirmed: 0,
@@ -557,6 +591,9 @@ export default function AdmissionTableReportPage() {
           class_room: s.class_room,
           number_in_room: s.number_in_room,
           university, campus,
+          // เก็บทั้งคณะและสาขา/กลุ่มวิชาไว้เสมอ — มุมที่ไม่ได้ใช้จัดกลุ่มกลายเป็นรายละเอียดของแถว
+          faculty: a.faculty_name || '',
+          field: a.group_field || '',
           program: a.program_name || '',
           confirmed: !!a.confirmed,
         });
@@ -567,15 +604,15 @@ export default function AdmissionTableReportPage() {
     }
 
     // มหาวิทยาลัยตัวแทนของกลุ่ม (ใช้ตอนเรียงตามชื่อมหาวิทยาลัย) — โหมดไม่แยกมหาวิทยาลัย
-    // คณะหนึ่งมีได้หลายแห่ง จึงยึดแห่งที่มีคนติดมากที่สุดในคณะนั้น
+    // กลุ่มหนึ่งมีได้หลายแห่ง จึงยึดแห่งที่มีคนติดมากที่สุดในกลุ่มนั้น
     const mainUni = (g) =>
       [...g.uniCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'th'))[0]?.[0] || '';
 
-    const byName = (a, b) => a.faculty.localeCompare(b.faculty, 'th');
+    const byName = (a, b) => a.title.localeCompare(b.title, 'th');
     const byCount = (a, b) => b.codes.size - a.codes.size || byName(a, b);
-    // คณะที่ผู้ใช้ยังไม่ได้จัดลำดับให้ ไปต่อท้ายแล้วเรียงตามจำนวนกันเอง
+    // กลุ่มที่ผู้ใช้ยังไม่ได้จัดลำดับให้ ไปต่อท้ายแล้วเรียงตามจำนวนกันเอง
     const rank = (g) => {
-      const i = facOrder.indexOf(g.faculty);
+      const i = facOrder.indexOf(g.title);
       return i === -1 ? Number.MAX_SAFE_INTEGER : i;
     };
     const SORTERS = {
@@ -590,24 +627,29 @@ export default function AdmissionTableReportPage() {
     groups.forEach(g => { g.mainUni = mainUni(g); });
     groups.sort(SORTERS[facSort] || SORTERS.count);
     return groups;
-  }, [students, filterByDate, facGroupUni, facOnlyConfirmed, facSort, facOrder]);
+  }, [students, filterByDate, facDim, facGroupUni, facOnlyConfirmed, facSort, facOrder]);
 
-  // ชื่อคณะเรียงตามที่แสดงอยู่จริง — ใช้เป็นรายการให้ลากจัดลำดับ (โหมดแยกมหาวิทยาลัยมีชื่อคณะซ้ำได้)
-  const facultyNames = useMemo(
-    () => [...new Set(facultyGroups.map(g => g.faculty))],
-    [facultyGroups]
+  const facDimDef = dimOf(facDim);
+
+  // ชื่อกลุ่มเรียงตามที่แสดงอยู่จริง — ใช้เป็นรายการให้ลากจัดลำดับ (โหมดแยกมหาวิทยาลัยมีชื่อกลุ่มซ้ำได้)
+  const groupNames = useMemo(
+    () => [...new Set(reportGroups.map(g => g.title))],
+    [reportGroups]
   );
 
   // คนคนเดียวติดหลายคณะได้ — ยอด "คน" ของทั้งรายงานจึงต้อง unique ข้ามกลุ่ม ไม่ใช่บวกยอดรายกลุ่ม
-  const facultyStudentCount = new Set(facultyGroups.flatMap(g => [...g.codes])).size;
-  const facultyRowCount = facultyGroups.reduce((n, g) => n + g.rows.length, 0);
+  const groupStudentCount = new Set(reportGroups.flatMap(g => [...g.codes])).size;
+  const groupRowCount = reportGroups.reduce((n, g) => n + g.rows.length, 0);
 
   const exportFacultyExcel = () => {
+    const dim = dimOf(facDim);
     const wb = XLSX.utils.book_new();
+    // จัดกลุ่มด้วยสาขา/กลุ่มวิชาแล้ว "คณะ" กลายเป็นรายละเอียดของแถว จึงเพิ่มเป็นคอลัมน์แทน
+    const withFaculty = facDim === 'field';
 
-    const summary = facultyGroups.map((g, i) => ({
+    const summary = reportGroups.map((g, i) => ({
       'ลำดับ': i + 1,
-      'คณะ': g.faculty,
+      [dim.label]: g.title,
       ...(facGroupUni
         ? { 'มหาวิทยาลัย': g.university, 'วิทยาเขต': g.campus }
         : { 'มหาวิทยาลัยที่มีคนติดมากสุด': g.mainUni, 'จำนวนมหาวิทยาลัย': g.uniCount.size }),
@@ -617,13 +659,13 @@ export default function AdmissionTableReportPage() {
     }));
     const wsSum = XLSX.utils.json_to_sheet(summary);
     wsSum['!cols'] = [{ wch: 7 }, { wch: 34 }, { wch: 30 }, { wch: 16 }, { wch: 18 }, { wch: 13 }, { wch: 12 }];
-    XLSX.utils.book_append_sheet(wb, wsSum, 'สรุปรายคณะ');
+    XLSX.utils.book_append_sheet(wb, wsSum, `สรุปราย${dim.sheet}`);
 
-    // แถวรายชื่อซ้ำชื่อคณะทุกบรรทัด (ไม่ merge) เพื่อให้เอาไปกรอง/ทำ pivot ใน Excel ต่อได้
-    const detail = facultyGroups.flatMap(g =>
+    // แถวรายชื่อซ้ำชื่อกลุ่มทุกบรรทัด (ไม่ merge) เพื่อให้เอาไปกรอง/ทำ pivot ใน Excel ต่อได้
+    const detail = reportGroups.flatMap(g =>
       g.rows.map((r, i) => ({
-        'คณะ': g.faculty,
-        'ลำดับในคณะ': i + 1,
+        [dim.label]: g.title,
+        'ลำดับในกลุ่ม': i + 1,
         'ชั้น': r.class_level,
         'ห้อง': r.class_room,
         'เลขที่': r.number_in_room,
@@ -631,6 +673,7 @@ export default function AdmissionTableReportPage() {
         'ชื่อ-นามสกุล': r.name,
         'มหาวิทยาลัย': r.university,
         'วิทยาเขต': r.campus,
+        ...(withFaculty ? { 'คณะ': r.faculty } : {}),
         'สาขา': r.program,
         'ยืนยันสิทธิ์': r.confirmed ? 'ยืนยัน' : '',
       }))
@@ -638,30 +681,34 @@ export default function AdmissionTableReportPage() {
     const wsDetail = XLSX.utils.json_to_sheet(detail);
     wsDetail['!cols'] = [
       { wch: 34 }, { wch: 11 }, { wch: 7 }, { wch: 6 }, { wch: 7 }, { wch: 12 },
-      { wch: 24 }, { wch: 30 }, { wch: 14 }, { wch: 28 }, { wch: 11 },
+      { wch: 24 }, { wch: 30 }, { wch: 14 },
+      ...(withFaculty ? [{ wch: 30 }] : []),
+      { wch: 28 }, { wch: 11 },
     ];
-    XLSX.utils.book_append_sheet(wb, wsDetail, 'รายชื่อรายคณะ');
+    XLSX.utils.book_append_sheet(wb, wsDetail, `รายชื่อราย${dim.sheet}`);
 
-    XLSX.writeFile(wb, `รายงานรายคณะ_${yearName}.xlsx`);
+    XLSX.writeFile(wb, `รายงานราย${dim.sheet}_${yearName}.xlsx`);
   };
 
-  // ── รายงานรายคณะ → PDF (เปิดหน้าพิมพ์ใน tab ใหม่) ──────────────────────────
+  // ── รายงานแยกกลุ่ม → PDF (เปิดหน้าพิมพ์ใน tab ใหม่) ────────────────────────
   // Set/Map ผ่าน JSON ไม่ได้ ต้องแปลงเป็นตัวเลขก่อนส่งให้หน้าพิมพ์
   const exportFacultyPdf = () => {
+    const dim = dimOf(facDim);
     const payload = {
       yearName,
       cols: pdfCols,
+      dim: { key: dim.key, label: dim.label },
       groupUni: facGroupUni,
       onlyConfirmed: facOnlyConfirmed,
       dateRangeLabel,
       totals: {
-        faculties: facultyGroups.length,
-        students: facultyStudentCount,
-        rows: facultyRowCount,
+        groups: reportGroups.length,
+        students: groupStudentCount,
+        rows: groupRowCount,
       },
-      groups: facultyGroups.map(g => ({
+      groups: reportGroups.map(g => ({
         key: g.key,
-        faculty: g.faculty,
+        title: g.title,
         university: g.university,
         campus: g.campus,
         mainUni: g.mainUni,
@@ -1183,7 +1230,7 @@ export default function AdmissionTableReportPage() {
           </div>
         )}
 
-        {/* ── รายงานรายคณะ: คณะไหนมีใครติดบ้าง ยืนยันที่ไหน ── */}
+        {/* ── รายงานแยกกลุ่ม: กลุ่มไหนมีใครติดบ้าง ยืนยันที่ไหน ── */}
         {!loading && (
           // relative z-10: ขังลำดับการซ้อนของส่วนนี้ไว้ใต้การ์ดสรุปด้านบน (z-20)
           // เมนู "คอลัมน์ PDF" ของการ์ดบนจะได้ไม่โดนแถบเครื่องมือของส่วนนี้ทับ
@@ -1195,14 +1242,28 @@ export default function AdmissionTableReportPage() {
                   <Icon name="faculty" size={16} />
                 </span>
                 <div>
-                  <h2 className="text-sm font-semibold sm:text-base">รายงานรายคณะ</h2>
+                  <h2 className="text-sm font-semibold sm:text-base">รายงานราย{facDimDef.label}</h2>
                   <p className="mt-0.5 text-xs text-base-content/55">
-                    {facultyGroups.length} คณะ · {facultyStudentCount} คน · {facultyRowCount} รายการ
+                    {reportGroups.length} {facDimDef.label} · {groupStudentCount} คน · {groupRowCount} รายการ
                   </p>
                 </div>
               </div>
 
               <div className="ml-auto flex flex-wrap items-center gap-2">
+                <label htmlFor="fac-dim" className="whitespace-nowrap text-xs text-base-content/55">
+                  จัดกลุ่มตาม
+                </label>
+                <select
+                  id="fac-dim"
+                  className="select select-sm"
+                  value={facDim}
+                  onChange={e => changeFacDim(e.target.value)}
+                >
+                  {GROUP_DIMS.map(d => (
+                    <option key={d.key} value={d.key}>{d.label}</option>
+                  ))}
+                </select>
+
                 <label htmlFor="fac-sort" className="whitespace-nowrap text-xs text-base-content/55">
                   เรียงตาม
                 </label>
@@ -1212,7 +1273,7 @@ export default function AdmissionTableReportPage() {
                   value={facSort}
                   onChange={e => setFacSort(e.target.value)}
                 >
-                  {FACULTY_SORTS.map(s => (
+                  {groupSorts(facDimDef.label).map(s => (
                     <option key={s.key} value={s.key}>{s.label}</option>
                   ))}
                 </select>
@@ -1240,7 +1301,7 @@ export default function AdmissionTableReportPage() {
                 <button
                   className="btn btn-outline btn-sm gap-1.5"
                   onClick={exportFacultyExcel}
-                  disabled={facultyGroups.length === 0}
+                  disabled={reportGroups.length === 0}
                 >
                   <Icon name="sheet" size={15} />
                   Excel
@@ -1251,7 +1312,7 @@ export default function AdmissionTableReportPage() {
                 <button
                   className="btn btn-outline btn-sm gap-1.5"
                   onClick={exportFacultyPdf}
-                  disabled={facultyGroups.length === 0}
+                  disabled={reportGroups.length === 0}
                 >
                   <Icon name="print" size={15} />
                   PDF
@@ -1260,10 +1321,11 @@ export default function AdmissionTableReportPage() {
             </div>
 
             {facSort === 'custom' && (
-              <FacultyOrderPanel
-                names={facultyNames}
+              <GroupOrderPanel
+                names={groupNames}
+                label={facDimDef.label}
                 onReorder={applyFacOrder}
-                onReset={() => { setFacOrder([]); saveJSON(LS_FAC_ORDER, []); }}
+                onReset={resetFacOrder}
               />
             )}
 
@@ -1277,12 +1339,12 @@ export default function AdmissionTableReportPage() {
                     <th>รหัส</th>
                     <th>ชื่อ-นามสกุล</th>
                     <th>มหาวิทยาลัย</th>
-                    <th>สาขา</th>
+                    <th>{facDim === 'field' ? 'คณะ' : 'สาขา'}</th>
                     <th>ยืนยันสิทธิ์</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {facultyGroups.length === 0 ? (
+                  {reportGroups.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="p-0">
                         <EmptyState
@@ -1301,14 +1363,14 @@ export default function AdmissionTableReportPage() {
                       </td>
                     </tr>
                   ) : (
-                    facultyGroups.map(g => (
+                    reportGroups.map(g => (
                       <Fragment key={g.key}>
                         <tr>
                           <th colSpan={8} className="bg-base-200/70">
                             <div className="flex flex-wrap items-center gap-2">
                               <Icon name="faculty" size={15} className="text-primary" />
                               <span className="text-sm font-semibold text-base-content">
-                                {g.faculty}
+                                {g.title}
                               </span>
                               {facGroupUni && (
                                 <span className="text-xs font-normal text-base-content/60">
@@ -1351,7 +1413,17 @@ export default function AdmissionTableReportPage() {
                                 <span className="block text-base-content/50">วิทยาเขต {r.campus}</span>
                               )}
                             </td>
-                            <td className="text-xs text-base-content/70">{r.program || '—'}</td>
+                            {/* จัดกลุ่มด้วยสาขา/กลุ่มวิชาแล้ว ชื่อสาขาซ้ำกับหัวแถบ — โชว์คณะที่สังกัดแทนจะได้ข้อมูลเพิ่ม */}
+                            <td className="text-xs text-base-content/70">
+                              {facDim === 'field' ? (
+                                <>
+                                  {r.faculty || '—'}
+                                  {r.program && (
+                                    <span className="block text-base-content/45">{r.program}</span>
+                                  )}
+                                </>
+                              ) : (r.program || '—')}
+                            </td>
                             <td>
                               {r.confirmed ? (
                                 <Tag tone="success" icon="checkCircle">ยืนยันแล้ว</Tag>

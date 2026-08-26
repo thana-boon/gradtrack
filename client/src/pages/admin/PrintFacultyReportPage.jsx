@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
-// หน้าพิมพ์ของ "รายงานรายคณะ" — เปิดใน tab ใหม่แล้วให้ผู้ใช้สั่ง Save as PDF
+// หน้าพิมพ์ของ "รายงานแยกกลุ่ม" (จัดกลุ่มด้วยคณะ หรือด้วยสาขา/กลุ่มวิชา)
+// เปิดใน tab ใหม่แล้วให้ผู้ใช้สั่ง Save as PDF
 // ข้อมูลมาจาก localStorage ที่ AdmissionTableReportPage เก็บไว้ (Set/Map ถูกแปลงเป็นตัวเลขมาแล้ว)
 export default function PrintFacultyReportPage() {
   const [data, setData] = useState(null);
@@ -23,14 +24,18 @@ export default function PrintFacultyReportPage() {
   if (!data) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'Prompt, sans-serif' }}>
-        <p>ไม่พบข้อมูล กรุณาเปิดจากหน้ารายงานรายคณะอีกครั้ง</p>
+        <p>ไม่พบข้อมูล กรุณาเปิดจากหน้ารายงานอีกครั้ง</p>
       </div>
     );
   }
 
-  const { groups = [], yearName, cols, groupUni, onlyConfirmed, dateRangeLabel, totals } = data;
+  const { groups = [], yearName, cols, dim, groupUni, onlyConfirmed, dateRangeLabel, totals } = data;
   // ไฟล์ที่ค้างใน localStorage จากเวอร์ชันก่อนไม่มีคีย์ cols — ถือว่าเอาทุกคอลัมน์
   const show = { class: true, room: true, seat: true, code: true, ...(cols || {}) };
+  // ข้อมูลเวอร์ชันก่อนไม่มี dim (จัดกลุ่มด้วยคณะอย่างเดียว) และเก็บชื่อกลุ่มไว้ในคีย์ faculty
+  const dimLabel = dim?.label || 'คณะ';
+  const byField = dim?.key === 'field';
+  const titleOf = (g) => g.title ?? g.faculty;
 
   const idCols = [
     show.class && { key: 'class', label: 'ชั้น', width: 34 },
@@ -48,7 +53,7 @@ export default function PrintFacultyReportPage() {
 
   const conditions = [
     onlyConfirmed ? 'เฉพาะรายการที่ยืนยันสิทธิ์แล้ว' : '',
-    groupUni ? 'แยกคณะตามมหาวิทยาลัย' : '',
+    groupUni ? `แยก${dimLabel}ตามมหาวิทยาลัย` : '',
     dateRangeLabel,
   ].filter(Boolean);
 
@@ -62,7 +67,7 @@ export default function PrintFacultyReportPage() {
         h2 { font-size: 14px; font-weight: 700; text-align: center; margin-bottom: 4px; padding-top: 12px; }
         .meta { text-align: center; font-size: 10px; color: #6b6478; margin-bottom: 12px; }
         h3 { font-size: 11px; font-weight: 700; margin: 14px 0 4px; color: #3d2a55; }
-        /* หัวข้อคณะห้ามอยู่ท้ายหน้าโดยไม่มีรายชื่อตามมา */
+        /* หัวข้อกลุ่มห้ามอยู่ท้ายหน้าโดยไม่มีรายชื่อตามมา */
         h3 { break-after: avoid; page-break-after: avoid; }
         .sub { font-weight: 400; color: #6b6478; }
         .badges { float: right; font-weight: 400; font-size: 10px; color: #4a4358; }
@@ -86,9 +91,9 @@ export default function PrintFacultyReportPage() {
         <p>กด <strong>Ctrl+P</strong> เพื่อพิมพ์ · เลือก "Save as PDF" · ปิด "Headers and footers" ใน More settings</p>
       </div>
 
-      <h2>รายงานผลการสอบติดรายคณะ ปีการศึกษา {yearName}</h2>
+      <h2>รายงานผลการสอบติดราย{dimLabel} ปีการศึกษา {yearName}</h2>
       <p className="meta">
-        {totals ? `${totals.faculties} คณะ · ${totals.students} คน · ${totals.rows} รายการ` : ''}
+        {totals ? `${totals.groups ?? totals.faculties} ${dimLabel} · ${totals.students} คน · ${totals.rows} รายการ` : ''}
         {conditions.length > 0 ? ` · ${conditions.join(' · ')}` : ''}
       </p>
 
@@ -101,7 +106,7 @@ export default function PrintFacultyReportPage() {
             <thead>
               <tr>
                 <th className="num" style={{ width: 32 }}>ลำดับ</th>
-                <th style={{ minWidth: 150 }}>คณะ</th>
+                <th style={{ minWidth: 150 }}>{dimLabel}</th>
                 <th style={{ minWidth: 150 }}>{groupUni ? 'มหาวิทยาลัย' : 'มหาวิทยาลัยที่มีคนติดมากสุด'}</th>
                 {!groupUni && <th className="num" style={{ width: 44 }}>จำนวนแห่ง</th>}
                 <th className="num" style={{ width: 40 }}>คน</th>
@@ -113,7 +118,7 @@ export default function PrintFacultyReportPage() {
               {groups.map((g, i) => (
                 <tr key={g.key}>
                   <td className="num" style={{ color: '#999' }}>{i + 1}</td>
-                  <td style={{ fontWeight: 600 }}>{g.faculty}</td>
+                  <td style={{ fontWeight: 600 }}>{titleOf(g)}</td>
                   <td>
                     {groupUni
                       ? `${g.university}${g.campus ? ` (${g.campus})` : ''}`
@@ -136,7 +141,7 @@ export default function PrintFacultyReportPage() {
                   {g.rows.length !== g.students ? ` · ${g.rows.length} รายการ` : ''}
                   {g.confirmed > 0 ? ` · ยืนยัน ${g.confirmed}` : ''}
                 </span>
-                {gi + 1}. {g.faculty}
+                {gi + 1}. {titleOf(g)}
                 {groupUni && (
                   <span className="sub"> · {g.university}{g.campus ? ` (${g.campus})` : ''}</span>
                 )}
@@ -150,6 +155,7 @@ export default function PrintFacultyReportPage() {
                     ))}
                     <th style={{ minWidth: 110 }}>ชื่อ-นามสกุล</th>
                     <th style={{ minWidth: 140 }}>มหาวิทยาลัย</th>
+                    {byField && <th style={{ minWidth: 120 }}>คณะ</th>}
                     <th style={{ minWidth: 120 }}>สาขา</th>
                     <th className="num" style={{ width: 40 }}>ยืนยัน</th>
                   </tr>
@@ -172,6 +178,7 @@ export default function PrintFacultyReportPage() {
                         {r.university || <span className="dim">-</span>}
                         {r.campus ? <span className="sub"> (วิทยาเขต{r.campus})</span> : ''}
                       </td>
+                      {byField && <td>{r.faculty || <span className="dim">-</span>}</td>}
                       <td>{r.program || <span className="dim">-</span>}</td>
                       <td className="num">{r.confirmed ? <span className="confirmed">✓</span> : ''}</td>
                     </tr>

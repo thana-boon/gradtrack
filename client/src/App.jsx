@@ -2,6 +2,7 @@
 import { AuthProvider } from './context/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import SessionGuard from './components/SessionGuard';
+import BackToSchoolOS from './components/BackToSchoolOS';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import StudentPage from './pages/StudentPage';
@@ -17,6 +18,9 @@ export default function App() {
       {/* อยู่นอก Routes เพราะต้องเฝ้าทุกหน้าที่ล็อกอินแล้ว ไม่ผูกกับ route ไหนเป็นพิเศษ
           (หน้า login ไม่มี token ตัวนี้จึงเงียบไปเอง) */}
       <SessionGuard />
+      {/* อยู่นอก Router เหมือนกัน — เป็นลิงก์ออกนอกแอป ไม่ผูกกับ route ไหน
+          (หน้า print ซ่อนตัวเองผ่าน @media print ในคอมโพเนนต์) */}
+      <BackToSchoolOS />
       <BrowserRouter basename={import.meta.env.BASE_URL}>
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
